@@ -7,11 +7,13 @@ from groq import Groq
 import tiktoken
 from aiohttp import web, ClientSession
 import requests
+import logging
 
 GREETED_CHAT_IDS: set[int] = set()
 
 
 load_dotenv()
+logging.basicConfig(level=getattr(logging, (os.getenv("LOG_LEVEL") or "INFO").upper(), logging.INFO), format="%(asctime)s %(levelname)s %(message)s")
 
 QUERY = "X5 директор по развитию"
 TOKEN_LIMIT = 6000
@@ -37,6 +39,7 @@ def _serper_search(query: str) -> dict:
 	try:
 		api_key = os.getenv("SERPER_API_KEY")
 		if not api_key:
+			logging.warning("SERPER_API_KEY is missing")
 			return {}
 		headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
 		payload = json.dumps({
@@ -47,9 +50,11 @@ def _serper_search(query: str) -> dict:
 		})
 		resp = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=12)
 		if resp.status_code >= 400:
+			logging.warning("Serper HTTP %s", resp.status_code)
 			return {}
 		return resp.json()
 	except Exception:
+		logging.exception("Serper request failed")
 		return {}
 
 def _strip_html_to_text(html_bytes: bytes) -> str:
@@ -123,6 +128,10 @@ async def fetch_all() -> None:
 	query = QUERY
 	obj = _serper_search(query)
 	links = list(dict.fromkeys(list(_extract_links(obj))))
+	logging.info("query='%s' links=%d", query, len(links))
+	if not links:
+		logging.info("no links to fetch for query")
+		return ""
 	headers = {
 		"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 		"accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -161,6 +170,7 @@ async def fetch_all() -> None:
 				except Exception:
 					pass
 			except Exception:
+				logging.warning("fetch failed: %s", url)
 				return
 
 	tasks = [asyncio.create_task(fetch_one(i, url)) for i, url in enumerate(links)]
@@ -181,6 +191,7 @@ async def fetch_all() -> None:
 
 	with open(combined_path, "r", encoding="utf-8") as rf:
 		combined_text = rf.read()
+	logging.info("combined_text_chars=%d", len(combined_text))
 	system_prompt = (
 		"Ты помощник-экстрактор фактов. Отвечай строго одним полным именем в именительном падеже."
 		" Никаких дополнительных слов, знаков или комментариев. Если данных недостаточно — выдай пустую строку."
@@ -210,6 +221,7 @@ async def fetch_all() -> None:
 	answer_path = os.path.join(out_dir, "_answer.txt")
 	with open(answer_path, "w", encoding="utf-8") as wf:
 		wf.write(answer)
+	logging.info("answer_len=%d", len(answer))
 	return answer
 
 async def _send_message(session: ClientSession, bot_token: str, chat_id: int, text: str) -> None:
@@ -217,6 +229,7 @@ async def _send_message(session: ClientSession, bot_token: str, chat_id: int, te
 	await session.post(url, json={"chat_id": chat_id, "text": text})
 
 async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
+	logging.info("process_update chat_id=%s text='%s'", str(chat_id), (text or "")[:200])
 	async with ClientSession() as session:
 		if chat_id not in GREETED_CHAT_IDS:
 			await _send_message(session, bot_token, chat_id, "👋 Hi! Send me a query.")
@@ -226,11 +239,13 @@ async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
 		try:
 			answer = await fetch_all()
 		except Exception:
+			logging.exception("processing failed")
 			answer = ""
 		if answer and answer.strip():
 			await _send_message(session, bot_token, chat_id, answer.strip())
 
 async def handle_webhook(request: web.Request) -> web.Response:
+	logging.info("webhook hit")
 	bot_token = os.environ.get("TG_BOT_TOKEN")
 	if not bot_token:
 		return web.Response(status=500, text="TG_BOT_TOKEN missing")
@@ -245,6 +260,7 @@ async def handle_webhook(request: web.Request) -> web.Response:
 	chat = message.get("chat") or {}
 	chat_id = chat.get("id")
 	text = (message.get("text") or "").strip()
+	logging.info("update chat_id=%s text_len=%d", str(chat_id), len(text))
 	if chat_id:
 		asyncio.create_task(_process_update(bot_token, chat_id, text))
 	return web.json_response({"ok": True})
@@ -252,6 +268,11 @@ async def handle_webhook(request: web.Request) -> web.Response:
 def create_app() -> web.Application:
 	app = web.Application()
 	app.router.add_post("/tg/{token}", handle_webhook)
+
+	async def health(_: web.Request) -> web.Response:
+		return web.Response(text="ok")
+
+	app.router.add_get("/_health", health)
 	return app
 
 if __name__ == "__main__":
