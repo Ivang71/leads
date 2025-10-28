@@ -65,49 +65,48 @@ class TlsBrowser:
 		body = b''
 		resp = None
 		aborted_at_cap = False
-		try:
-			if follow:
-				resp = await asyncio.to_thread(getattr(self.session, method), url, **kwargs)
-				try:
-					content = resp.content if getattr(resp, 'content', None) is not None else b''
-				except Exception:
-					content = b''
-				try:
-					body = bytes(content[:MAX_BYTES])
-				except Exception:
-					body = b''
-				try:
-					aborted_at_cap = isinstance(content, (bytes, bytearray)) and len(content) > MAX_BYTES
-				except Exception:
-					aborted_at_cap = False
-				try:
-					close = getattr(resp, 'close', None)
-					if callable(close):
-						close()
-				except Exception:
-					pass
-			else:
+		if follow:
+			resp = await asyncio.to_thread(getattr(self.session, method), url, **kwargs)
+			try:
+				content = resp.content if getattr(resp, 'content', None) is not None else b''
+			except Exception:
+				content = b''
+			try:
+				body = bytes(content[:MAX_BYTES])
+			except Exception:
+				body = b''
+			try:
+				aborted_at_cap = isinstance(content, (bytes, bytearray)) and len(content) > MAX_BYTES
+			except Exception:
+				aborted_at_cap = False
+			try:
+				close = getattr(resp, 'close', None)
+				if callable(close):
+					close()
+			except Exception:
+				pass
+		else:
+			try:
 				resp = await asyncio.to_thread(getattr(self.session, method), url, stream=True, **kwargs)
-				try:
-					iter_content = getattr(resp, 'iter_content', None)
-					if callable(iter_content):
-						for chunk in iter_content(chunk_size=2048):
-							if not chunk:
-								break
-							remaining = MAX_BYTES - len(body)
-							if remaining <= 0:
-								aborted_at_cap = True
-								break
-							body += bytes(chunk[:remaining])
-							if len(body) >= MAX_BYTES:
-								aborted_at_cap = True
-								break
-						try:
-							close = getattr(resp, 'close', None)
-							if callable(close):
-								close()
-						except Exception:
-							pass
+				iter_content = getattr(resp, 'iter_content', None)
+				if callable(iter_content):
+					for chunk in iter_content(chunk_size=2048):
+						if not chunk:
+							break
+						remaining = MAX_BYTES - len(body)
+						if remaining <= 0:
+							aborted_at_cap = True
+							break
+						body += bytes(chunk[:remaining])
+						if len(body) >= MAX_BYTES:
+							aborted_at_cap = True
+							break
+					try:
+						close = getattr(resp, 'close', None)
+						if callable(close):
+							close()
+					except Exception:
+						pass
 				else:
 					raise RuntimeError('streaming_not_supported')
 			except Exception:
