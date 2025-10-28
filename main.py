@@ -92,13 +92,14 @@ async def fetch_all() -> None:
 
     sem = asyncio.Semaphore(50)
     print("DBG concurrency=50")
+    written_txts = []
 
     async def fetch_one(i: int, url: str) -> None:
         async with sem:
             try:
                 print(f"DBG start i={i} url={url}")
                 async with TlsBrowser(user_agent=ua, proxy=None) as browser:
-                    res = await browser.get(url, headers=headers, timeout=30, follow=True, max_bytes=16777216)
+                    res = await browser.get(url, headers=headers, timeout=8, follow=True, max_bytes=16777216)
                 res_dict = res if isinstance(res, dict) else {}
                 if not res_dict:
                     print(f"DBG no_res_dict i={i} url={url} type={type(res)}")
@@ -133,12 +134,32 @@ async def fetch_all() -> None:
                 with open(txt_path, "w", encoding="utf-8") as tf:
                     tf.write(txt)
                 print(f"{status} {final_url} -> {html_path} | {txt_path} bytes={len(body)}")
+                try:
+                    written_txts.append((i, txt_path))
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"ERR {url} {e}\n{traceback.format_exc()}")
 
     tasks = [asyncio.create_task(fetch_one(i, url)) for i, url in enumerate(links)]
     if tasks:
         await asyncio.gather(*tasks)
+    try:
+        combined_path = os.path.join(out_dir, "_combined.txt")
+        parts = []
+        for _, pth in sorted(written_txts, key=lambda x: x[0]):
+            try:
+                with open(pth, "r", encoding="utf-8") as rf:
+                    content = rf.read().strip()
+                    if content:
+                        parts.append(content)
+            except Exception as e:
+                print(f"DBG combine_fail path={pth} err={e}")
+        with open(combined_path, "w", encoding="utf-8") as wf:
+            wf.write("\n\n-----\n\n".join(parts))
+        print(f"DBG combined -> {combined_path} docs={len(parts)}")
+    except Exception as e:
+        print(f"DBG combine_error {e}\n{traceback.format_exc()}")
 
 if __name__ == "__main__":
     asyncio.run(fetch_all())
