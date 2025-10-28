@@ -1,0 +1,6 @@
+python-dotenv
+tls-client
+beautifulsoup4
+lxml
+requests
+
