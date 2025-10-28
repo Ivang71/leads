@@ -15,7 +15,6 @@ GREETED_CHAT_IDS: set[int] = set()
 load_dotenv()
 logging.basicConfig(level=getattr(logging, (os.getenv("LOG_LEVEL") or "INFO").upper(), logging.INFO), format="%(asctime)s %(levelname)s %(message)s")
 
-QUERY = "X5 директор по развитию"
 TOKEN_LIMIT = 6000
 SAFETY_TOKENS = 200
 
@@ -125,16 +124,10 @@ def _trim_to_token_limit(instruction_prefix: str, text: str, token_limit: int, s
 		"total_after": len(pref_tokens) + keep,
 	}
 
-async def fetch_all() -> None:
+async def fetch_all(query: str) -> None:
 	_extend_sys_path()
-	try:
-		TlsBrowser = import_module("phantom.net.client").TlsBrowser
-		generate_user_agent = import_module("phantom.browser.ua").generate_user_agent
-		ua, _ = generate_user_agent(0)
-	except Exception as e:
-		logging.exception("Failed to import phantom TlsBrowser. Ensure PHANTOM_PATH points to the phantom repo.")
-		raise
-	query = QUERY
+	from tls_browser import TlsBrowser
+	ua = "Mozilla/5.0"
 	obj = _serper_search(query)
 	links = list(dict.fromkeys(list(_extract_links(obj))))
 	logging.info("query='%s' links=%d", query, len(links))
@@ -243,10 +236,8 @@ async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
 		if chat_id not in GREETED_CHAT_IDS:
 			await _send_message(session, bot_token, chat_id, "👋 Hi! Send me a query.")
 			GREETED_CHAT_IDS.add(chat_id)
-		global QUERY
-		QUERY = text
 		try:
-			answer = await fetch_all()
+			answer = await fetch_all(text)
 		except Exception:
 			logging.exception("processing failed")
 			answer = ""
