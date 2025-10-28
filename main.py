@@ -20,9 +20,14 @@ TOKEN_LIMIT = 6000
 SAFETY_TOKENS = 200
 
 def _extend_sys_path():
-	base = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-	if base not in sys.path:
-		sys.path.insert(0, base)
+    # Prefer explicit PHANTOM_PATH if provided
+    phantom_path = os.environ.get("PHANTOM_PATH")
+    if phantom_path and os.path.isdir(phantom_path) and phantom_path not in sys.path:
+        sys.path.insert(0, phantom_path)
+    # Also add parent dir so `phantom` package at ../phantom is importable
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if base not in sys.path:
+        sys.path.insert(0, base)
 
 def _extract_links(o):
 	if isinstance(o, dict):
@@ -122,9 +127,13 @@ def _trim_to_token_limit(instruction_prefix: str, text: str, token_limit: int, s
 
 async def fetch_all() -> None:
 	_extend_sys_path()
-	TlsBrowser = import_module("net.client").TlsBrowser
-	generate_user_agent = import_module("browser.ua").generate_user_agent
-	ua, _ = generate_user_agent(0)
+	try:
+		TlsBrowser = import_module("phantom.net.client").TlsBrowser
+		generate_user_agent = import_module("phantom.browser.ua").generate_user_agent
+		ua, _ = generate_user_agent(0)
+	except Exception as e:
+		logging.exception("Failed to import phantom TlsBrowser. Ensure PHANTOM_PATH points to the phantom repo.")
+		raise
 	query = QUERY
 	obj = _serper_search(query)
 	links = list(dict.fromkeys(list(_extract_links(obj))))

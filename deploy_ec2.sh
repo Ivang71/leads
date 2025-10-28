@@ -4,6 +4,8 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 DOMAIN="${DOMAIN:-eus.lat}"
 PORT="${PORT:-8000}"
+PHANTOM_PATH_DEFAULT="$HOME/phantom"
+PHANTOM_PATH="${PHANTOM_PATH:-$PHANTOM_PATH_DEFAULT}"
 
 if [ ! -f "$APP_DIR/.env" ]; then
   echo ".env not found in $APP_DIR" >&2
@@ -22,7 +24,8 @@ fi
 sudo apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3 python3-venv python3-pip \
-  nginx curl \
+  nginx curl git build-essential \
+  golang-go \
   certbot python3-certbot-nginx
 
 VENV_DIR="$APP_DIR/.venv"
@@ -31,6 +34,12 @@ if [ ! -d "$VENV_DIR" ]; then
 fi
 "$VENV_DIR/bin/pip" install --upgrade pip
 "$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"
+"$VENV_DIR/bin/pip" install tls-client || true
+
+# Optionally clone phantom if PHANTOM_GIT is provided and PHANTOM_PATH missing
+if [ -n "${PHANTOM_GIT:-}" ] && [ ! -d "$PHANTOM_PATH" ]; then
+  git clone "$PHANTOM_GIT" "$PHANTOM_PATH"
+fi
 
 APP_USER="$(stat -c %U "$APP_DIR")"
 APP_GROUP="$(stat -c %G "$APP_DIR")"
@@ -47,6 +56,8 @@ User=$APP_USER
 Group=$APP_GROUP
 WorkingDirectory=$APP_DIR
 Environment=PYTHONUNBUFFERED=1
+Environment=PHANTOM_PATH=$PHANTOM_PATH
+Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
 ExecStart=$VENV_DIR/bin/python $APP_DIR/main.py
 Restart=always
 RestartSec=5
