@@ -216,6 +216,20 @@ async def _send_message(session: ClientSession, bot_token: str, chat_id: int, te
 	url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 	await session.post(url, json={"chat_id": chat_id, "text": text})
 
+async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
+	async with ClientSession() as session:
+		if chat_id not in GREETED_CHAT_IDS:
+			await _send_message(session, bot_token, chat_id, "👋 Hi! Send me a query.")
+			GREETED_CHAT_IDS.add(chat_id)
+		global QUERY
+		QUERY = text
+		try:
+			answer = await fetch_all()
+		except Exception:
+			answer = ""
+		if answer and answer.strip():
+			await _send_message(session, bot_token, chat_id, answer.strip())
+
 async def handle_webhook(request: web.Request) -> web.Response:
 	bot_token = os.environ.get("TG_BOT_TOKEN")
 	if not bot_token:
@@ -231,20 +245,8 @@ async def handle_webhook(request: web.Request) -> web.Response:
 	chat = message.get("chat") or {}
 	chat_id = chat.get("id")
 	text = (message.get("text") or "").strip()
-	if not chat_id:
-		return web.json_response({"ok": True})
-	async with ClientSession() as session:
-		if chat_id not in GREETED_CHAT_IDS:
-			await _send_message(session, bot_token, chat_id, "👋 Hi! Send me a query.")
-			GREETED_CHAT_IDS.add(chat_id)
-		global QUERY
-		QUERY = text
-		try:
-			answer = await fetch_all()
-		except Exception:
-			answer = ""
-		if answer and answer.strip():
-			await _send_message(session, bot_token, chat_id, answer.strip())
+	if chat_id:
+		asyncio.create_task(_process_update(bot_token, chat_id, text))
 	return web.json_response({"ok": True})
 
 def create_app() -> web.Application:
