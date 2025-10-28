@@ -6,18 +6,16 @@ from bs4 import BeautifulSoup, Comment
 from groq import Groq
 import tiktoken
 from aiohttp import web, ClientSession
+import requests
 
 GREETED_CHAT_IDS: set[int] = set()
 
 
 load_dotenv()
 
-QUERY = "сдэк директор отдела продаж"
+QUERY = "X5 директор по развитию"
 TOKEN_LIMIT = 6000
 SAFETY_TOKENS = 200
-
-with open("mock.json", encoding="utf-8") as f:
-	obj = json.load(f)
 
 def _extend_sys_path():
 	base = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -35,7 +33,24 @@ def _extract_links(o):
 		for it in o:
 			yield from _extract_links(it)
 
-links = list(dict.fromkeys(list(_extract_links(obj))))
+def _serper_search(query: str) -> dict:
+	try:
+		api_key = os.getenv("SERPER_API_KEY")
+		if not api_key:
+			return {}
+		headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+		payload = json.dumps({
+			"q": query,
+			"gl": "ru",
+			"hl": "ru",
+			"autocorrect": False,
+		})
+		resp = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=12)
+		if resp.status_code >= 400:
+			return {}
+		return resp.json()
+	except Exception:
+		return {}
 
 def _strip_html_to_text(html_bytes: bytes) -> str:
 	soup = BeautifulSoup(html_bytes, "lxml")
@@ -106,6 +121,8 @@ async def fetch_all() -> None:
 	generate_user_agent = import_module("phantom.browser.ua").generate_user_agent
 	ua, _ = generate_user_agent(0)
 	query = QUERY
+	obj = _serper_search(query)
+	links = list(dict.fromkeys(list(_extract_links(obj))))
 	headers = {
 		"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 		"accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -236,5 +253,6 @@ def create_app() -> web.Application:
 	return app
 
 if __name__ == "__main__":
-	web.run_app(create_app(), host="127.0.0.1", port=443)
+	port = int(os.environ.get("PORT") or 8000)
+	web.run_app(create_app(), host="127.0.0.1", port=port)
 
