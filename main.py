@@ -5,6 +5,9 @@ from importlib import import_module
 from bs4 import BeautifulSoup, Comment
 from groq import Groq
 import tiktoken
+from aiohttp import web, ClientSession
+
+GREETED_CHAT_IDS: set[int] = set()
 
 
 load_dotenv()
@@ -190,7 +193,48 @@ async def fetch_all() -> None:
 	answer_path = os.path.join(out_dir, "_answer.txt")
 	with open(answer_path, "w", encoding="utf-8") as wf:
 		wf.write(answer)
+	return answer
+
+async def _send_message(session: ClientSession, bot_token: str, chat_id: int, text: str) -> None:
+	url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+	await session.post(url, json={"chat_id": chat_id, "text": text})
+
+async def handle_webhook(request: web.Request) -> web.Response:
+	bot_token = os.environ.get("TG_BOT_TOKEN")
+	if not bot_token:
+		return web.Response(status=500, text="TG_BOT_TOKEN missing")
+	path_token = request.match_info.get("token")
+	if path_token != bot_token:
+		return web.Response(status=403)
+	try:
+		update = await request.json()
+	except Exception:
+		return web.Response(status=400)
+	message = (update.get("message") or update.get("edited_message") or {})
+	chat = message.get("chat") or {}
+	chat_id = chat.get("id")
+	text = (message.get("text") or "").strip()
+	if not chat_id:
+		return web.json_response({"ok": True})
+	async with ClientSession() as session:
+		if chat_id not in GREETED_CHAT_IDS:
+			await _send_message(session, bot_token, chat_id, "👋 Hi! Send me a query.")
+			GREETED_CHAT_IDS.add(chat_id)
+		global QUERY
+		QUERY = text
+		try:
+			answer = await fetch_all()
+		except Exception:
+			answer = ""
+		if answer and answer.strip():
+			await _send_message(session, bot_token, chat_id, answer.strip())
+	return web.json_response({"ok": True})
+
+def create_app() -> web.Application:
+	app = web.Application()
+	app.router.add_post("/tg/{token}", handle_webhook)
+	return app
 
 if __name__ == "__main__":
-	asyncio.run(fetch_all())
+	web.run_app(create_app(), host="127.0.0.1", port=443)
 
