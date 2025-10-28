@@ -3,9 +3,15 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from importlib import import_module
 from bs4 import BeautifulSoup, Comment
+from groq import Groq
+import tiktoken
 
 
 load_dotenv()
+
+QUERY = "сдэк директор отдела продаж"
+TOKEN_LIMIT = 6000
+SAFETY_TOKENS = 200
 
 with open("mock.json", encoding="utf-8") as f:
     obj = json.load(f)
@@ -77,12 +83,29 @@ def _strip_html_to_text(html_bytes: bytes) -> str:
         kept.append(ln)
     return "\n".join(kept)
 
+def _trim_to_token_limit(instruction_prefix: str, text: str, token_limit: int, safety: int) -> tuple[str, dict]:
+    enc = tiktoken.get_encoding("cl100k_base")
+    pref_tokens = enc.encode(instruction_prefix or "")
+    text_tokens = enc.encode(text or "")
+    budget = max(0, token_limit - len(pref_tokens) - max(0, safety))
+    keep = min(len(text_tokens), budget)
+    trimmed_text = enc.decode(text_tokens[:keep]) if keep > 0 else ""
+    return trimmed_text, {
+        "pref_tokens": len(pref_tokens),
+        "text_tokens": len(text_tokens),
+        "budget": budget,
+        "kept": keep,
+        "total_after": len(pref_tokens) + keep,
+    }
+
 async def fetch_all() -> None:
     _extend_sys_path()
     TlsBrowser = import_module("phantom.net.client").TlsBrowser
     generate_user_agent = import_module("phantom.browser.ua").generate_user_agent
     ua, _ = generate_user_agent(0)
     print(f"DBG ua={ua}")
+    query = QUERY
+    print(f"DBG query={query}")
     headers = {
         "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -160,6 +183,44 @@ async def fetch_all() -> None:
         print(f"DBG combined -> {combined_path} docs={len(parts)}")
     except Exception as e:
         print(f"DBG combine_error {e}\n{traceback.format_exc()}")
+    # Send to LLM
+    try:
+        with open(combined_path, "r", encoding="utf-8") as rf:
+            combined_text = rf.read()
+        system_prompt = (
+            "Ты помощник-экстрактор фактов. Отвечай строго одним полным именем в именительном падеже."
+            " Никаких дополнительных слов, знаков или комментариев. Если данных недостаточно — выдай пустую строку."
+        )
+        prefix = (
+            "В следующем тексте твоя задача выдать наиболее актуальную информацию, отвечающую кто сейчас \"{q}\". "
+            "Отвечай одним полным именем, например \"Иван Остапович Озёрный\" или \"Екатерина Васильевна Глухих\". "
+            "Ты не можешь вставить в ответ ничего кроме одного единственного полного имени. "
+            "Информация с более поздней датой имеет колоссальный приоритет.\n\n"
+            "Текст:\n"
+        ).format(q=query)
+        trimmed_text, st = _trim_to_token_limit(prefix, combined_text, TOKEN_LIMIT, SAFETY_TOKENS)
+        print(f"DBG tokens pref={st['pref_tokens']} text={st['text_tokens']} budget={st['budget']} kept={st['kept']} total_after={st['total_after']} limit={TOKEN_LIMIT}")
+        user_prompt = prefix + trimmed_text
+        # Final cap by characters removed; token-based trimming enforces limit
+        client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+        resp = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0,
+            max_tokens=64,
+            top_p=1,
+            stream=False,
+        )
+        answer = (resp.choices[0].message.content or "").strip()
+        answer_path = os.path.join(out_dir, "_answer.txt")
+        with open(answer_path, "w", encoding="utf-8") as wf:
+            wf.write(answer)
+        print(f"DBG llm_answer -> {answer_path}: {answer}")
+    except Exception as e:
+        print(f"DBG llm_error {e}\n{traceback.format_exc()}")
 
 if __name__ == "__main__":
     asyncio.run(fetch_all())
