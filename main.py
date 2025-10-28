@@ -122,8 +122,8 @@ def _trim_to_token_limit(instruction_prefix: str, text: str, token_limit: int, s
 
 async def fetch_all() -> None:
 	_extend_sys_path()
-	TlsBrowser = import_module("phantom.net.client").TlsBrowser
-	generate_user_agent = import_module("phantom.browser.ua").generate_user_agent
+	TlsBrowser = import_module("net.client").TlsBrowser
+	generate_user_agent = import_module("browser.ua").generate_user_agent
 	ua, _ = generate_user_agent(0)
 	query = QUERY
 	obj = _serper_search(query)
