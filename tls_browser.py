@@ -108,28 +108,29 @@ class TlsBrowser:
 								close()
 						except Exception:
 							pass
-					else:
-						raise RuntimeError('streaming_not_supported')
-		except Exception:
-			resp = await asyncio.to_thread(getattr(self.session, method), url, **kwargs)
-			try:
-				content = resp.content if getattr(resp, 'content', None) is not None else b''
+				else:
+					raise RuntimeError('streaming_not_supported')
 			except Exception:
-				content = b''
-			try:
-				body = bytes(content[:MAX_BYTES])
-			except Exception:
-				body = b''
-			try:
-				aborted_at_cap = isinstance(content, (bytes, bytearray)) and len(content) > MAX_BYTES
-			except Exception:
-				aborted_at_cap = False
-			try:
-				close = getattr(resp, 'close', None)
-				if callable(close):
-					close()
-			except Exception:
-				pass
+				# Fallback to non-streaming fetch
+				resp = await asyncio.to_thread(getattr(self.session, method), url, **kwargs)
+				try:
+					content = resp.content if getattr(resp, 'content', None) is not None else b''
+				except Exception:
+					content = b''
+				try:
+					body = bytes(content[:MAX_BYTES])
+				except Exception:
+					body = b''
+				try:
+					aborted_at_cap = isinstance(content, (bytes, bytearray)) and len(content) > MAX_BYTES
+				except Exception:
+					aborted_at_cap = False
+				try:
+					close = getattr(resp, 'close', None)
+					if callable(close):
+						close()
+				except Exception:
+					pass
 		try:
 			final_url = str(resp.url)
 		except Exception:
