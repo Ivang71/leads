@@ -110,7 +110,7 @@ class TlsBrowser:
 							pass
 					else:
 						raise RuntimeError('streaming_not_supported')
-			except Exception:
+		except Exception:
 			resp = await asyncio.to_thread(getattr(self.session, method), url, **kwargs)
 			try:
 				content = resp.content if getattr(resp, 'content', None) is not None else b''
