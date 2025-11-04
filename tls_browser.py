@@ -1,15 +1,12 @@
 import os, asyncio
+import tls_client
 
 
 class TlsBrowser:
 	def __init__(self, user_agent: str, proxy: str | None):
 		self.user_agent = user_agent
 		self.proxy = proxy
-		try:
-			import tls_client  # type: ignore
-		except Exception as e:
-			raise RuntimeError("tls-client python bindings are required. Install with: pip install tls-client") from e
-		profile = os.environ.get("TLS_CLIENT_PROFILE", "chrome_140")
+		profile = "chrome_140"
 		self.session = tls_client.Session(
 			client_identifier=profile,
 			random_tls_extension_order=True,
