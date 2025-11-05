@@ -1,4 +1,4 @@
-import os, re, asyncio, time, sys
+import os, re, asyncio, time, sys, json, base64
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup, Comment
@@ -153,43 +153,56 @@ async def fetch_all(query: str, save_root: bool = False, on_llm_start = None) ->
 		"fetch config: links=%d concurrency=%d per_url_timeout=%ds overall_timeout=%ds",
 		len(links), FETCH_CONCURRENCY, FETCH_TIMEOUT_SEC, FETCH_OVERALL_TIMEOUT_SEC
 	)
-	sem = asyncio.Semaphore(FETCH_CONCURRENCY)
 	written_txts = []
 	counters = {"ok": 0, "timeout": 0, "cancel": 0, "fail": 0}
-
-	async def fetch_one(i: int, url: str) -> None:
-		async with sem:
+	_fetch_t0 = time.monotonic()
+	proc = None
+	try:
+		worker = os.path.abspath(os.path.join(os.path.dirname(__file__), "fetch_batch_worker.py"))
+		proc = await asyncio.create_subprocess_exec(
+			sys.executable, "-u", worker,
+			stdin=asyncio.subprocess.PIPE,
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.PIPE,
+		)
+		cfg = {
+			"urls": links,
+			"concurrency": FETCH_CONCURRENCY,
+			"per_url_timeout": FETCH_TIMEOUT_SEC,
+			"max_bytes": 16777216,
+		}
+		proc.stdin.write((json.dumps(cfg) + "\n").encode("utf-8"))
+		await proc.stdin.drain()
+		proc.stdin.close()
+		while True:
+			remaining = FETCH_OVERALL_TIMEOUT_SEC - (time.monotonic() - _fetch_t0)
+			if remaining <= 0:
+				break
 			try:
-				_link_t0 = time.monotonic()
-				worker = os.path.abspath(os.path.join(os.path.dirname(__file__), "fetch_worker.py"))
-				proc = await asyncio.create_subprocess_exec(
-					sys.executable, "-u", worker, url, str(FETCH_TIMEOUT_SEC),
-					stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-				)
+				line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+			except asyncio.TimeoutError:
+				break
+			if not line:
+				break
+			try:
+				row = json.loads(line.decode("utf-8", errors="ignore"))
+			except Exception:
+				continue
+			i = int(row.get("i") or 0)
+			url = row.get("url") or ""
+			final_url = row.get("final_url") or url
+			status = (row.get("status") or "fail").lower()
+			content_len = int(row.get("content_len") or 0)
+			body = b""
+			if content_len > 0:
+				# read exact base64 payload and trailing newline
+				payload = await proc.stdout.readexactly(content_len + 1)
+				content_b64 = payload[:-1].decode("ascii", errors="ignore")
 				try:
-					stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=FETCH_TIMEOUT_SEC + 1)
-				except asyncio.TimeoutError:
-					counters["timeout"] += 1
-					try:
-						proc.kill()
-					except Exception:
-						pass
-					logging.warning("fetch timeout [%d] %.2fs %s", i+1, time.monotonic()-_link_t0, url)
-					return
-				if proc.returncode != 0:
-					counters["fail"] += 1
-					logging.warning("fetch failed [%d]: %s", i+1, url)
-					return
-				try:
-					import json, base64
-					res = json.loads(stdout.decode("utf-8", errors="ignore"))
-					final_url = res.get("url") or url
-					content_b64 = res.get("content") or ""
-					body = base64.b64decode(content_b64) if content_b64 else b""
+					body = base64.b64decode(content_b64)
 				except Exception:
-					counters["fail"] += 1
-					logging.warning("fetch failed [%d]: %s", i+1, url)
-					return
+					body = b""
+			if status == "ok":
 				p = urlparse(final_url)
 				host = (p.netloc or "site").replace(":", "_")
 				path_part = (p.path or "/").strip("/").replace("/", "_")
@@ -197,12 +210,12 @@ async def fetch_all(query: str, save_root: bool = False, on_llm_start = None) ->
 					path_part = "index"
 				if len(path_part) > 80:
 					path_part = path_part[:80]
-				base = f"{i+1:02d}_{host}_{path_part}"
-				html_path = os.path.join(out_dir, base + ".html")
+				bname = f"{i+1:02d}_{host}_{path_part}"
+				html_path = os.path.join(out_dir, bname + ".html")
 				with open(html_path, "wb") as wf:
 					wf.write(body)
 				txt = _strip_html_to_text(body) if body else ""
-				txt_path = os.path.join(out_dir, base + ".txt")
+				txt_path = os.path.join(out_dir, bname + ".txt")
 				with open(txt_path, "w", encoding="utf-8") as tf:
 					tf.write(txt)
 				try:
@@ -210,38 +223,18 @@ async def fetch_all(query: str, save_root: bool = False, on_llm_start = None) ->
 				except Exception:
 					pass
 				counters["ok"] += 1
-			except Exception:
+			elif status == "timeout":
+				counters["timeout"] += 1
+			else:
 				counters["fail"] += 1
-				logging.warning("fetch failed [%d]: %s", i+1, url)
-				return
-			except asyncio.CancelledError:
-				counters["cancel"] += 1
-				logging.warning("fetch cancelled [%d]: %s", i+1, url)
-				return
-
-	_fetch_t0 = time.monotonic()
-	tasks = [asyncio.create_task(fetch_one(i, url)) for i, url in enumerate(links)]
-	if tasks:
-		pending = set(tasks)
-		try:
-			while pending:
-				remaining = FETCH_OVERALL_TIMEOUT_SEC - (time.monotonic() - _fetch_t0)
-				if remaining <= 0:
-					break
-				done, pending = await asyncio.wait(pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
-			if pending:
-				logging.warning("fetch phase timed out after %ss; pending=%d", FETCH_OVERALL_TIMEOUT_SEC, len(pending))
-		finally:
-			# hard cancel everything we spawned
-			left = 0
-			for t in tasks:
-				if not t.done():
-					left += 1
-					t.cancel()
-			if left:
-				logging.warning("force-cancelled remaining fetchers: %d", left)
-			# do NOT await cancelled tasks; return immediately
+	finally:
+		if proc and (proc.returncode is None):
+			try:
+				proc.kill()
+			except Exception:
+				pass
 	dur_fetch = time.monotonic() - _fetch_t0
+	counters["cancel"] = max(0, len(links) - (counters["ok"] + counters["timeout"] + counters["fail"]))
 	logging.info("fetch summary: ok=%d timeout=%d cancel=%d fail=%d", counters["ok"], counters["timeout"], counters["cancel"], counters["fail"])
 	combined_path = os.path.join(out_dir, "_combined.txt")
 	parts = []
