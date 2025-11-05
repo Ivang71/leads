@@ -1,7 +1,6 @@
-import os, sys, re, asyncio, json
+import os, re, asyncio
 from urllib.parse import urlparse
 from dotenv import load_dotenv
-from importlib import import_module
 from bs4 import BeautifulSoup, Comment
 from groq import Groq
 import tiktoken
@@ -18,48 +17,21 @@ logging.basicConfig(level=getattr(logging, (os.getenv("LOG_LEVEL") or "INFO").up
 TOKEN_LIMIT = 6000
 SAFETY_TOKENS = 200
 
-def _extend_sys_path():
-    # Prefer explicit PHANTOM_PATH if provided
-    phantom_path = os.environ.get("PHANTOM_PATH")
-    if phantom_path and os.path.isdir(phantom_path) and phantom_path not in sys.path:
-        sys.path.insert(0, phantom_path)
-    # Also add parent dir so `phantom` package at ../phantom is importable
-    base = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    if base not in sys.path:
-        sys.path.insert(0, base)
-
 def _extract_links(o):
 	if isinstance(o, dict):
 		for k, v in o.items():
 			if k == "link" and isinstance(v, str):
 				yield v
+			elif k == "links" and isinstance(v, list):
+				for s in v:
+					if isinstance(s, str):
+						yield s
 			else:
 				yield from _extract_links(v)
 	elif isinstance(o, list):
 		for it in o:
 			yield from _extract_links(it)
 
-def _serper_search(query: str) -> dict:
-	try:
-		api_key = os.getenv("SERPER_API_KEY")
-		if not api_key:
-			logging.warning("SERPER_API_KEY is missing")
-			return {}
-		headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
-		payload = json.dumps({
-			"q": query,
-			"gl": "ru",
-			"hl": "ru",
-			"autocorrect": False,
-		})
-		resp = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=12)
-		if resp.status_code >= 400:
-			logging.warning("Serper HTTP %s", resp.status_code)
-			return {}
-		return resp.json()
-	except Exception:
-		logging.exception("Serper request failed")
-		return {}
 
 def _strip_html_to_text(html_bytes: bytes) -> str:
 	soup = BeautifulSoup(html_bytes, "lxml")
@@ -125,10 +97,18 @@ def _trim_to_token_limit(instruction_prefix: str, text: str, token_limit: int, s
 	}
 
 async def fetch_all(query: str) -> None:
-	_extend_sys_path()
 	from tls_browser import TlsBrowser
 	ua = "Mozilla/5.0"
-	obj = _serper_search(query)
+	try:
+		base = os.environ.get("YANDEX_SERP_URL")
+		url = (base.rstrip("/") + "/search")
+		resp = requests.get(url, params={"q": query}, timeout=10)
+		obj = resp.json() if resp.status_code < 400 else []
+		if resp.status_code >= 400:
+			logging.warning("Yandex local HTTP %s", resp.status_code)
+	except Exception:
+		logging.exception("Yandex local request failed")
+		obj = []
 	links = list(dict.fromkeys(list(_extract_links(obj))))
 	logging.info("query='%s' links=%d", query, len(links))
 	if not links:
@@ -276,6 +256,4 @@ def create_app() -> web.Application:
 	return app
 
 if __name__ == "__main__":
-	port = int(os.environ.get("PORT") or 8000)
-	web.run_app(create_app(), host="127.0.0.1", port=port)
-
+	web.run_app(create_app(), host="127.0.0.1", port=8000)
