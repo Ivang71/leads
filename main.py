@@ -17,6 +17,10 @@ logging.basicConfig(level=getattr(logging, (os.getenv("LOG_LEVEL") or "INFO").up
 TOKEN_LIMIT = 6000
 SAFETY_TOKENS = 200
 
+FETCH_CONCURRENCY = 100
+FETCH_TIMEOUT_SEC = 6
+FETCH_OVERALL_TIMEOUT_SEC = 6
+
 def _extract_links(o):
 	if isinstance(o, dict):
 		for k, v in o.items():
@@ -102,7 +106,6 @@ async def fetch_all(query: str, save_root: bool = False) -> None:
 	start_total = time.monotonic()
 	dur_ms = 0.0
 	dur_fetch = 0.0
-	dur_combine = 0.0
 	dur_llm = 0.0
 	base = os.environ.get("YANDEX_SERP_URL")
 	obj = []
@@ -134,8 +137,8 @@ async def fetch_all(query: str, save_root: bool = False) -> None:
 	if not links:
 		logging.info("no links to fetch for query")
 		logging.info(
-			"timing ms=%.2fs fetch=%.2fs combine=%.2fs llm=%.2fs total=%.2fs links=%d",
-			dur_ms, dur_fetch, dur_combine, dur_llm, time.monotonic() - start_total, len(links)
+			"timing ms=%.2fs fetch=%.2fs llm=%.2fs total=%.2fs links=%d",
+			dur_ms, dur_fetch, dur_llm, time.monotonic() - start_total, len(links)
 		)
 		return ""
 	headers = {
@@ -145,14 +148,28 @@ async def fetch_all(query: str, save_root: bool = False) -> None:
 	out_dir = os.path.join(os.path.dirname(__file__), "htmls")
 	os.makedirs(out_dir, exist_ok=True)
 
-	sem = asyncio.Semaphore(50)
+	logging.info(
+		"fetch config: links=%d concurrency=%d per_url_timeout=%ds overall_timeout=%ds",
+		len(links), FETCH_CONCURRENCY, FETCH_TIMEOUT_SEC, FETCH_OVERALL_TIMEOUT_SEC
+	)
+	sem = asyncio.Semaphore(FETCH_CONCURRENCY)
 	written_txts = []
+	counters = {"ok": 0, "timeout": 0, "cancel": 0, "fail": 0}
 
 	async def fetch_one(i: int, url: str) -> None:
 		async with sem:
 			try:
 				async with TlsBrowser(user_agent=ua, proxy=None) as browser:
-					res = await browser.get(url, headers=headers, timeout=8, follow=True, max_bytes=16777216)
+					_link_t0 = time.monotonic()
+					try:
+						res = await asyncio.wait_for(
+							browser.get(url, headers=headers, timeout=FETCH_TIMEOUT_SEC, follow=True, max_bytes=16777216),
+							timeout=FETCH_TIMEOUT_SEC + 1,
+						)
+					except asyncio.TimeoutError:
+						counters["timeout"] += 1
+						logging.warning("fetch timeout [%d] %.2fs %s", i+1, time.monotonic()-_link_t0, url)
+						return
 				final_url = (res or {}).get("url") or url
 				content_val = (res or {}).get("content")
 				body = content_val if isinstance(content_val, (bytes, bytearray)) else (bytes(content_val or b"") if content_val is not None else b"")
@@ -175,17 +192,41 @@ async def fetch_all(query: str, save_root: bool = False) -> None:
 					written_txts.append((i, txt_path))
 				except Exception:
 					pass
+				counters["ok"] += 1
 			except Exception:
-				logging.warning("fetch failed: %s", url)
+				counters["fail"] += 1
+				logging.warning("fetch failed [%d]: %s", i+1, url)
+				return
+			except asyncio.CancelledError:
+				counters["cancel"] += 1
+				logging.warning("fetch cancelled [%d]: %s", i+1, url)
 				return
 
 	_fetch_t0 = time.monotonic()
 	tasks = [asyncio.create_task(fetch_one(i, url)) for i, url in enumerate(links)]
 	if tasks:
-		await asyncio.gather(*tasks)
+		pending = set(tasks)
+		try:
+			while pending:
+				remaining = FETCH_OVERALL_TIMEOUT_SEC - (time.monotonic() - _fetch_t0)
+				if remaining <= 0:
+					break
+				done, pending = await asyncio.wait(pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+			if pending:
+				logging.warning("fetch phase timed out after %ss; pending=%d", FETCH_OVERALL_TIMEOUT_SEC, len(pending))
+		finally:
+			# hard cancel everything we spawned
+			left = 0
+			for t in tasks:
+				if not t.done():
+					left += 1
+					t.cancel()
+			if left:
+				logging.warning("force-cancelled remaining fetchers: %d", left)
+			# do NOT await cancelled tasks; return immediately
 	dur_fetch = time.monotonic() - _fetch_t0
+	logging.info("fetch summary: ok=%d timeout=%d cancel=%d fail=%d", counters["ok"], counters["timeout"], counters["cancel"], counters["fail"])
 	combined_path = os.path.join(out_dir, "_combined.txt")
-	_combine_t0 = time.monotonic()
 	parts = []
 	for _, pth in sorted(written_txts, key=lambda x: x[0]):
 		try:
@@ -200,7 +241,6 @@ async def fetch_all(query: str, save_root: bool = False) -> None:
 
 	with open(combined_path, "r", encoding="utf-8") as rf:
 		combined_text = rf.read()
-	dur_combine = time.monotonic() - _combine_t0
 	if save_root:
 		root_agg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "aggregated.txt"))
 		with open(root_agg_path, "w", encoding="utf-8") as rf:
@@ -240,8 +280,8 @@ async def fetch_all(query: str, save_root: bool = False) -> None:
 	with open(answer_path, "w", encoding="utf-8") as wf:
 		wf.write(answer)
 	logging.info(
-		"answer_len=%d pages=%d links=%d timing ms=%.2fs fetch=%.2fs combine=%.2fs llm=%.2fs total=%.2fs",
-		len(answer), len(written_txts), len(links), dur_ms, dur_fetch, dur_combine, dur_llm, time.monotonic() - start_total
+		"answer_len=%d pages=%d links=%d timing ms=%.2fs fetch=%.2fs llm=%.2fs total=%.2fs",
+		len(answer), len(written_txts), len(links), dur_ms, dur_fetch, dur_llm, time.monotonic() - start_total
 	)
 	return answer
 
