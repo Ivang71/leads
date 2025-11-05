@@ -1,4 +1,4 @@
-import os, re, asyncio
+import os, re, asyncio, time
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup, Comment
@@ -8,7 +8,7 @@ from aiohttp import web, ClientSession
 import requests
 import logging
 
-GREETED_CHAT_IDS: set[int] = set()
+GREETED_CHAT_IDS: set[int] = set[int]()
 
 
 load_dotenv()
@@ -96,23 +96,47 @@ def _trim_to_token_limit(instruction_prefix: str, text: str, token_limit: int, s
 		"total_after": len(pref_tokens) + keep,
 	}
 
-async def fetch_all(query: str) -> None:
+async def fetch_all(query: str, save_root: bool = False) -> None:
 	from tls_browser import TlsBrowser
 	ua = "Mozilla/5.0"
-	try:
-		base = os.environ.get("YANDEX_SERP_URL")
+	start_total = time.monotonic()
+	dur_ms = 0.0
+	dur_fetch = 0.0
+	dur_combine = 0.0
+	dur_llm = 0.0
+	base = os.environ.get("YANDEX_SERP_URL")
+	obj = []
+	if not base:
+		logging.warning("YANDEX_SERP_URL not set")
+	else:
 		url = (base.rstrip("/") + "/search")
-		resp = requests.get(url, params={"q": query}, timeout=10)
-		obj = resp.json() if resp.status_code < 400 else []
-		if resp.status_code >= 400:
-			logging.warning("Yandex local HTTP %s", resp.status_code)
-	except Exception:
-		logging.exception("Yandex local request failed")
-		obj = []
+		_ms_t0 = time.monotonic()
+		try:
+			resp = requests.get(url, params={"q": query}, timeout=10)
+			if resp.status_code >= 400:
+				logging.warning("yandex ms http=%s", resp.status_code)
+			else:
+				ct = (resp.headers.get("content-type") or "").split(";")[0].strip()
+				if ct == "application/json":
+					obj = resp.json()
+				else:
+					logging.warning("yandex ms non-json response")
+		except requests.exceptions.ConnectTimeout:
+			logging.warning("yandex ms timeout: %s", url)
+		except requests.exceptions.ConnectionError as e:
+			logging.warning("yandex ms unreachable: %s", str(e))
+		except Exception:
+			logging.exception("yandex ms request failed")
+		finally:
+			dur_ms = time.monotonic() - _ms_t0
 	links = list(dict.fromkeys(list(_extract_links(obj))))
 	logging.info("query='%s' links=%d", query, len(links))
 	if not links:
 		logging.info("no links to fetch for query")
+		logging.info(
+			"timing ms=%.2fs fetch=%.2fs combine=%.2fs llm=%.2fs total=%.2fs links=%d",
+			dur_ms, dur_fetch, dur_combine, dur_llm, time.monotonic() - start_total, len(links)
+		)
 		return ""
 	headers = {
 		"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -155,10 +179,13 @@ async def fetch_all(query: str) -> None:
 				logging.warning("fetch failed: %s", url)
 				return
 
+	_fetch_t0 = time.monotonic()
 	tasks = [asyncio.create_task(fetch_one(i, url)) for i, url in enumerate(links)]
 	if tasks:
 		await asyncio.gather(*tasks)
+	dur_fetch = time.monotonic() - _fetch_t0
 	combined_path = os.path.join(out_dir, "_combined.txt")
+	_combine_t0 = time.monotonic()
 	parts = []
 	for _, pth in sorted(written_txts, key=lambda x: x[0]):
 		try:
@@ -173,7 +200,14 @@ async def fetch_all(query: str) -> None:
 
 	with open(combined_path, "r", encoding="utf-8") as rf:
 		combined_text = rf.read()
-	logging.info("combined_text_chars=%d", len(combined_text))
+	dur_combine = time.monotonic() - _combine_t0
+	if save_root:
+		root_agg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "aggregated.txt"))
+		with open(root_agg_path, "w", encoding="utf-8") as rf:
+			rf.write(combined_text)
+		logging.info("combined_text_chars=%d aggregated_path=%s", len(combined_text), root_agg_path)
+	else:
+		logging.info("combined_text_chars=%d", len(combined_text))
 	system_prompt = (
 		"Ты помощник-экстрактор фактов. Отвечай строго одним полным именем в именительном падеже."
 		" Никаких дополнительных слов, знаков или комментариев. Если данных недостаточно — выдай пустую строку."
@@ -187,6 +221,7 @@ async def fetch_all(query: str) -> None:
 	).format(q=query)
 	trimmed_text, _ = _trim_to_token_limit(prefix, combined_text, TOKEN_LIMIT, SAFETY_TOKENS)
 	user_prompt = prefix + trimmed_text
+	_llm_t0 = time.monotonic()
 	client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 	resp = client.chat.completions.create(
 		model="llama-3.1-8b-instant",
@@ -200,10 +235,14 @@ async def fetch_all(query: str) -> None:
 		stream=False,
 	)
 	answer = (resp.choices[0].message.content or "").strip()
+	dur_llm = time.monotonic() - _llm_t0
 	answer_path = os.path.join(out_dir, "_answer.txt")
 	with open(answer_path, "w", encoding="utf-8") as wf:
 		wf.write(answer)
-	logging.info("answer_len=%d", len(answer))
+	logging.info(
+		"answer_len=%d pages=%d links=%d timing ms=%.2fs fetch=%.2fs combine=%.2fs llm=%.2fs total=%.2fs",
+		len(answer), len(written_txts), len(links), dur_ms, dur_fetch, dur_combine, dur_llm, time.monotonic() - start_total
+	)
 	return answer
 
 async def _send_message(session: ClientSession, bot_token: str, chat_id: int, text: str) -> None:
@@ -252,7 +291,34 @@ def create_app() -> web.Application:
 	async def health(_: web.Request) -> web.Response:
 		return web.Response(text="ok")
 
+
+	async def test(request: web.Request) -> web.Response:
+		q = (request.query.get("q") or "").strip()
+		if not q:
+			return web.json_response({"error": "q missing"}, status=400)
+		base = os.environ.get("YANDEX_SERP_URL")
+		if not base:
+			return web.json_response({
+				"error": "YANDEX_SERP_URL missing",
+				"hint": "Set YANDEX_SERP_URL in .env, e.g. http://127.0.0.1:3000",
+			}, status=500)
+		try:
+			ans = await fetch_all(q, True)
+		except Exception as e:
+			logging.exception("test failed")
+			return web.json_response({
+				"error": "processing failed",
+				"reason": str(e),
+			}, status=500)
+		if not ans:
+			return web.json_response({
+				"error": "no answer produced",
+				"hint": "Ensure the microservice returns links",
+			}, status=502)
+		return web.Response(text=ans)
+
 	app.router.add_get("/_health", health)
+	app.router.add_get("/test", test)
 	return app
 
 if __name__ == "__main__":
