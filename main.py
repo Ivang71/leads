@@ -100,7 +100,7 @@ def _trim_to_token_limit(instruction_prefix: str, text: str, token_limit: int, s
 		"total_after": len(pref_tokens) + keep,
 	}
 
-async def fetch_all(query: str, save_root: bool = False) -> None:
+async def fetch_all(query: str, save_root: bool = False, on_llm_start = None) -> None:
 	ua = "Mozilla/5.0"
 	start_total = time.monotonic()
 	dur_ms = 0.0
@@ -276,6 +276,11 @@ async def fetch_all(query: str, save_root: bool = False) -> None:
 	).format(q=query)
 	trimmed_text, _ = _trim_to_token_limit(prefix, combined_text, TOKEN_LIMIT, SAFETY_TOKENS)
 	user_prompt = prefix + trimmed_text
+	if callable(on_llm_start):
+		try:
+			await on_llm_start()
+		except Exception:
+			pass
 	_llm_t0 = time.monotonic()
 	client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 	resp = client.chat.completions.create(
@@ -304,19 +309,50 @@ async def _send_message(session: ClientSession, bot_token: str, chat_id: int, te
 	url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 	await session.post(url, json={"chat_id": chat_id, "text": text})
 
+async def _send_message_get_id(session: ClientSession, bot_token: str, chat_id: int, text: str) -> int | None:
+	url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+	try:
+		resp = await session.post(url, json={"chat_id": chat_id, "text": text})
+		data = await resp.json()
+		return ((data or {}).get("result") or {}).get("message_id")
+	except Exception:
+		return None
+
+async def _edit_message_text(session: ClientSession, bot_token: str, chat_id: int, message_id: int, text: str) -> None:
+	url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+	try:
+		await session.post(url, json={"chat_id": chat_id, "message_id": message_id, "text": text})
+	except Exception:
+		pass
+
+async def _delete_message(session: ClientSession, bot_token: str, chat_id: int, message_id: int) -> None:
+	url = f"https://api.telegram.org/bot{bot_token}/deleteMessage"
+	try:
+		await session.post(url, json={"chat_id": chat_id, "message_id": message_id})
+	except Exception:
+		pass
+
 async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
 	logging.info("process_update chat_id=%s text='%s'", str(chat_id), (text or "")[:200])
 	async with ClientSession() as session:
 		if chat_id not in GREETED_CHAT_IDS:
 			await _send_message(session, bot_token, chat_id, "👋 Hi! Send me a query.")
 			GREETED_CHAT_IDS.add(chat_id)
+		status_id = await _send_message_get_id(session, bot_token, chat_id, "Ищу")
+		async def on_llm_start():
+			if status_id:
+				await _edit_message_text(session, bot_token, chat_id, status_id, "Думаю")
 		try:
-			answer = await fetch_all(text)
+			answer = await fetch_all(text, False, on_llm_start)
 		except Exception:
 			logging.exception("processing failed")
 			answer = ""
-		if answer and answer.strip():
-			await _send_message(session, bot_token, chat_id, answer.strip())
+		try:
+			if answer and answer.strip():
+				await _send_message(session, bot_token, chat_id, answer.strip())
+		finally:
+			if status_id:
+				await _delete_message(session, bot_token, chat_id, status_id)
 
 async def handle_webhook(request: web.Request) -> web.Response:
 	logging.info("webhook hit")
