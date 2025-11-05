@@ -17,6 +17,8 @@ logging.basicConfig(level=getattr(logging, (os.getenv("LOG_LEVEL") or "INFO").up
 TOKEN_LIMIT = 6000
 SAFETY_TOKENS = 200
 
+YANDEX_SERP_TIMEOUT_SEC = 36
+
 FETCH_CONCURRENCY = 40
 FETCH_TIMEOUT_SEC = 6
 FETCH_OVERALL_TIMEOUT_SEC = 6
@@ -114,7 +116,7 @@ async def fetch_all(query: str, save_root: bool = False, on_llm_start = None) ->
 		url = (base.rstrip("/") + "/search")
 		_ms_t0 = time.monotonic()
 		try:
-			resp = requests.get(url, params={"q": query}, timeout=10)
+			resp = requests.get(url, params={"q": query}, timeout=YANDEX_SERP_TIMEOUT_SEC)
 			if resp.status_code >= 400:
 				logging.warning("yandex ms http=%s", resp.status_code)
 			else:
