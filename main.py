@@ -1,4 +1,4 @@
-import os, re, asyncio, time
+import os, re, asyncio, time, sys
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup, Comment
@@ -101,7 +101,6 @@ def _trim_to_token_limit(instruction_prefix: str, text: str, token_limit: int, s
 	}
 
 async def fetch_all(query: str, save_root: bool = False) -> None:
-	from tls_browser import TlsBrowser
 	ua = "Mozilla/5.0"
 	start_total = time.monotonic()
 	dur_ms = 0.0
@@ -159,20 +158,36 @@ async def fetch_all(query: str, save_root: bool = False) -> None:
 	async def fetch_one(i: int, url: str) -> None:
 		async with sem:
 			try:
-				async with TlsBrowser(user_agent=ua, proxy=None) as browser:
-					_link_t0 = time.monotonic()
+				_link_t0 = time.monotonic()
+				worker = os.path.abspath(os.path.join(os.path.dirname(__file__), "fetch_worker.py"))
+				proc = await asyncio.create_subprocess_exec(
+					sys.executable, "-u", worker, url, str(FETCH_TIMEOUT_SEC),
+					stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+				)
+				try:
+					stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=FETCH_TIMEOUT_SEC + 1)
+				except asyncio.TimeoutError:
+					counters["timeout"] += 1
 					try:
-						res = await asyncio.wait_for(
-							browser.get(url, headers=headers, timeout=FETCH_TIMEOUT_SEC, follow=True, max_bytes=16777216),
-							timeout=FETCH_TIMEOUT_SEC + 1,
-						)
-					except asyncio.TimeoutError:
-						counters["timeout"] += 1
-						logging.warning("fetch timeout [%d] %.2fs %s", i+1, time.monotonic()-_link_t0, url)
-						return
-				final_url = (res or {}).get("url") or url
-				content_val = (res or {}).get("content")
-				body = content_val if isinstance(content_val, (bytes, bytearray)) else (bytes(content_val or b"") if content_val is not None else b"")
+						proc.kill()
+					except Exception:
+						pass
+					logging.warning("fetch timeout [%d] %.2fs %s", i+1, time.monotonic()-_link_t0, url)
+					return
+				if proc.returncode != 0:
+					counters["fail"] += 1
+					logging.warning("fetch failed [%d]: %s", i+1, url)
+					return
+				try:
+					import json, base64
+					res = json.loads(stdout.decode("utf-8", errors="ignore"))
+					final_url = res.get("url") or url
+					content_b64 = res.get("content") or ""
+					body = base64.b64decode(content_b64) if content_b64 else b""
+				except Exception:
+					counters["fail"] += 1
+					logging.warning("fetch failed [%d]: %s", i+1, url)
+					return
 				p = urlparse(final_url)
 				host = (p.netloc or "site").replace(":", "_")
 				path_part = (p.path or "/").strip("/").replace("/", "_")
