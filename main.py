@@ -38,6 +38,17 @@ def _extract_links(o):
 		for it in o:
 			yield from _extract_links(it)
 
+def _extract_texts(o):
+	if isinstance(o, dict):
+		for k, v in o.items():
+			if k == "text" and isinstance(v, str):
+				yield v
+			else:
+				yield from _extract_texts(v)
+	elif isinstance(o, list):
+		for it in o:
+			yield from _extract_texts(it)
+
 
 def _strip_html_to_text(html_bytes: bytes) -> str:
 	soup = BeautifulSoup(html_bytes, "lxml")
@@ -134,9 +145,16 @@ async def fetch_all(query: str, save_root: bool = False, on_llm_start = None) ->
 		finally:
 			dur_ms = time.monotonic() - _ms_t0
 	links = list(dict.fromkeys(list(_extract_links(obj))))
+	serp_texts = [t.strip() for t in _extract_texts(obj)]
+	serp_block = "\n\n".join([t for t in serp_texts if t])
 	logging.info("query='%s' links=%d", query, len(links))
 	if not links:
 		logging.info("no links to fetch for query")
+		if save_root and serp_block:
+			root_agg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "aggregated.txt"))
+			with open(root_agg_path, "w", encoding="utf-8") as rf:
+				rf.write(serp_block)
+			logging.info("combined_text_chars=%d aggregated_path=%s", len(serp_block), root_agg_path)
 		logging.info(
 			"timing ms=%.2fs fetch=%.2fs llm=%.2fs total=%.2fs links=%d",
 			dur_ms, dur_fetch, dur_llm, time.monotonic() - start_total, len(links)
@@ -251,6 +269,9 @@ async def fetch_all(query: str, save_root: bool = False, on_llm_start = None) ->
 
 	with open(combined_path, "r", encoding="utf-8") as rf:
 		combined_text = rf.read()
+	if serp_block:
+		prefix_sep = "\n\n-----\n\n" if combined_text else ""
+		combined_text = serp_block + prefix_sep + combined_text
 	if save_root:
 		root_agg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "aggregated.txt"))
 		with open(root_agg_path, "w", encoding="utf-8") as rf:
