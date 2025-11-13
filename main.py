@@ -32,7 +32,9 @@ async def ask_alice(query: str, on_start = None) -> str:
 		if resp.status_code >= 400:
 			logging.warning("alice ms http=%s", resp.status_code)
 			return ""
-		return resp.text
+		body = resp.text or ""
+		logging.info("alice ms http=%s body_chars=%d", resp.status_code, len(body))
+		return body
 	except requests.exceptions.ConnectTimeout:
 		logging.warning("alice ms timeout: %s", url)
 	except requests.exceptions.ConnectionError as e:
@@ -45,30 +47,87 @@ async def ask_alice(query: str, on_start = None) -> str:
 
 async def _send_message(session: ClientSession, bot_token: str, chat_id: int, text: str) -> None:
 	url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-	await session.post(url, json={"chat_id": chat_id, "text": text})
+	try:
+		resp = await session.post(url, json={"chat_id": chat_id, "text": text})
+		if resp.status >= 400:
+			body = (await resp.text())[:200]
+			logging.warning("tg sendMessage http=%s body=%s", resp.status, body)
+		else:
+			data = await resp.json()
+			if not ((data or {}).get("ok")):
+				logging.warning("tg sendMessage api_error=%s", json.dumps(data)[:200])
+	except Exception:
+		logging.exception("tg sendMessage failed")
 
 async def _send_message_get_id(session: ClientSession, bot_token: str, chat_id: int, text: str) -> int | None:
 	url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 	try:
 		resp = await session.post(url, json={"chat_id": chat_id, "text": text})
+		if resp.status >= 400:
+			body = (await resp.text())[:200]
+			logging.warning("tg sendMessage(http id) http=%s body=%s", resp.status, body)
+			return None
 		data = await resp.json()
-		return ((data or {}).get("result") or {}).get("message_id")
+		if not ((data or {}).get("ok")):
+			logging.warning("tg sendMessage(http id) api_error=%s", json.dumps(data)[:200])
+			return None
+		return ((data.get("result") or {}).get("message_id"))
 	except Exception:
+		logging.exception("tg sendMessage(http id) failed")
 		return None
 
 async def _edit_message_text(session: ClientSession, bot_token: str, chat_id: int, message_id: int, text: str) -> None:
 	url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
 	try:
-		await session.post(url, json={"chat_id": chat_id, "message_id": message_id, "text": text})
+		resp = await session.post(url, json={"chat_id": chat_id, "message_id": message_id, "text": text})
+		if resp.status >= 400:
+			body = (await resp.text())[:200]
+			logging.warning("tg editMessageText http=%s body=%s", resp.status, body)
+		else:
+			data = await resp.json()
+			if not ((data or {}).get("ok")):
+				logging.warning("tg editMessageText api_error=%s", json.dumps(data)[:200])
 	except Exception:
-		pass
+		logging.exception("tg editMessageText failed")
+
+def _split_telegram_messages(text: str, limit: int = 4096) -> list[str]:
+	if not text:
+		return []
+	out = []
+	buf = []
+	curr = 0
+	for ln in text.splitlines(keepends=True):
+		if len(ln) > limit:
+			if curr > 0:
+				out.append("".join(buf))
+				buf = []
+				curr = 0
+			for i in range(0, len(ln), limit):
+				out.append(ln[i:i+limit])
+			continue
+		if curr + len(ln) > limit:
+			out.append("".join(buf))
+			buf = []
+			curr = 0
+		buf.append(ln)
+		curr += len(ln)
+	if curr > 0:
+		out.append("".join(buf))
+	return out
 
 async def _delete_message(session: ClientSession, bot_token: str, chat_id: int, message_id: int) -> None:
 	url = f"https://api.telegram.org/bot{bot_token}/deleteMessage"
 	try:
-		await session.post(url, json={"chat_id": chat_id, "message_id": message_id})
+		resp = await session.post(url, json={"chat_id": chat_id, "message_id": message_id})
+		if resp.status >= 400:
+			body = (await resp.text())[:200]
+			logging.warning("tg deleteMessage http=%s body=%s", resp.status, body)
+		else:
+			data = await resp.json()
+			if not ((data or {}).get("ok")):
+				logging.warning("tg deleteMessage api_error=%s", json.dumps(data)[:200])
 	except Exception:
-		pass
+		logging.exception("tg deleteMessage failed")
 
 async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
 	logging.info("process_update chat_id=%s text='%s'", str(chat_id), (text or "")[:200])
@@ -86,8 +145,10 @@ async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
 			logging.exception("processing failed")
 			answer = ""
 		try:
-			if answer and answer.strip():
-				await _send_message(session, bot_token, chat_id, answer.strip())
+			answer = (answer or "").strip()
+			if answer:
+				for chunk in _split_telegram_messages(answer):
+					await _send_message(session, bot_token, chat_id, chunk)
 		finally:
 			if status_id:
 				await _delete_message(session, bot_token, chat_id, status_id)
