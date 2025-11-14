@@ -172,6 +172,8 @@ async def ask_alice(query: str, on_start = None) -> str:
 		logging.warning("ALICE_URL not set")
 		return ""
 	url = (base.rstrip("/") + "/search")
+	q_text = (query or "").strip()
+	search_q = f"найди {q_text} либо близкие должности"
 	if callable(on_start):
 		try:
 			await on_start()
@@ -179,7 +181,7 @@ async def ask_alice(query: str, on_start = None) -> str:
 			pass
 	t0 = time.monotonic()
 	try:
-		resp = requests.get(url, params={"q": query}, timeout=MS_TIMEOUT_SEC)
+		resp = requests.get(url, params={"q": search_q}, timeout=MS_TIMEOUT_SEC)
 		if resp.status_code >= 400:
 			logging.warning("alice ms http=%s", resp.status_code)
 			return ""
