@@ -8,6 +8,44 @@ import tiktoken
 
 GREETED_CHAT_IDS: set[int] = set[int]()
 
+STATS_PATH = os.path.join(os.path.dirname(__file__), "stat.jsonl")
+_REQUEST_STATS_BUFFER: list[dict] = []
+_REQUEST_STATS_LOCK = asyncio.Lock()
+_STATS_TASK: asyncio.Task | None = None
+
+async def _record_request_stat(event: dict) -> None:
+	async with _REQUEST_STATS_LOCK:
+		_REQUEST_STATS_BUFFER.append(event)
+
+async def _flush_stats_now() -> None:
+	async with _REQUEST_STATS_LOCK:
+		if not _REQUEST_STATS_BUFFER:
+			return
+		to_write = _REQUEST_STATS_BUFFER[:]
+		_REQUEST_STATS_BUFFER.clear()
+	def _write():
+		try:
+			os.makedirs(os.path.dirname(STATS_PATH), exist_ok=True)
+		except Exception:
+			pass
+		try:
+			with open(STATS_PATH, "a", encoding="utf-8") as wf:
+				for ev in to_write:
+					wf.write(json.dumps(ev, ensure_ascii=False) + "\n")
+		except Exception:
+			logging.exception("failed to append stats")
+	await asyncio.to_thread(_write)
+
+async def _stats_flush_loop() -> None:
+	while True:
+		try:
+			await asyncio.sleep(60)
+			await _flush_stats_now()
+		except asyncio.CancelledError:
+			break
+		except Exception:
+			logging.exception("stats flush failed")
+
 
 load_dotenv()
 logging.basicConfig(level=getattr(logging, (os.getenv("LOG_LEVEL") or "INFO").upper(), logging.INFO), format="%(asctime)s %(levelname)s %(message)s")
@@ -225,6 +263,10 @@ async def _delete_message(session: ClientSession, bot_token: str, chat_id: int, 
 
 async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
 	logging.info("process_update chat_id=%s text='%s'", str(chat_id), (text or "")[:200])
+	t0 = time.monotonic()
+	ok_flag = False
+	ms_len = 0
+	tg_len = 0
 	async with ClientSession() as session:
 		if chat_id not in GREETED_CHAT_IDS:
 			await _send_message(session, bot_token, chat_id, "👋 Hi! Send me a query.")
@@ -244,13 +286,30 @@ async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
 			answer = ""
 		try:
 			ms_text = (answer or "").strip()
+			ms_len = len(ms_text)
+			ok_flag = bool(ms_text)
 			name = _extract_name_with_groq(text, ms_text)
 			final = (name or ms_text or "нет ответа").strip()
+			tg_len = len(final)
 			for chunk in _split_telegram_messages(final):
 				await _send_message(session, bot_token, chat_id, chunk)
 		finally:
 			if status_id:
 				await _delete_message(session, bot_token, chat_id, status_id)
+	# record after finishing user-visible work
+	try:
+		await _record_request_stat({
+			"ts": int(time.time()),
+			"source": "tg",
+			"chat_id": chat_id,
+			"text_len": len(text or ""),
+			"dur": round(max(0.0, time.monotonic() - t0), 1),
+			"ok": ok_flag,
+			"ms_len": ms_len,
+			"tg_len": tg_len,
+		})
+	except Exception:
+		pass
 
 async def handle_webhook(request: web.Request) -> web.Response:
 	logging.info("webhook hit")
@@ -280,35 +339,89 @@ def create_app() -> web.Application:
 	async def health(_: web.Request) -> web.Response:
 		return web.Response(text="ok")
 
-
 	async def test(request: web.Request) -> web.Response:
+		t0 = time.monotonic()
+		ok = False
 		q = (request.query.get("q") or "").strip()
 		if not q:
-			return web.json_response({"error": "q missing"}, status=400)
+			resp = web.json_response({"error": "q missing"}, status=400)
+			await _record_request_stat({"ts": int(time.time()), "source": "http_test", "dur": round(max(0.0, time.monotonic() - t0), 1), "ok": ok, "q_len": 0})
+			return resp
 		base = (os.environ.get("ALICE_URL"))
 		if not base:
-			return web.json_response({
+			resp = web.json_response({
 				"error": "ALICE_URL missing",
 				"hint": "Set ALICE_URL in .env, e.g. http://127.0.0.1:3000",
 			}, status=500)
+			await _record_request_stat({"ts": int(time.time()), "source": "http_test", "dur": round(max(0.0, time.monotonic() - t0), 1), "ok": ok, "q_len": len(q)})
+			return resp
 		try:
 			ms_text = await ask_alice(q)
 		except Exception as e:
 			logging.exception("test failed")
-			return web.json_response({
+			resp = web.json_response({
 				"error": "processing failed",
 				"reason": str(e),
 			}, status=500)
+			await _record_request_stat({"ts": int(time.time()), "source": "http_test", "dur": round(max(0.0, time.monotonic() - t0), 1), "ok": ok, "q_len": len(q)})
+			return resp
 		if not ms_text:
-			return web.json_response({"error": "no answer produced"}, status=502)
+			resp = web.json_response({"error": "no answer produced"}, status=502)
+			await _record_request_stat({
+				"ts": int(time.time()),
+				"source": "http_test",
+				"dur": round(max(0.0, time.monotonic() - t0), 1),
+				"ok": ok,
+				"q_len": len(q),
+				"ms_len": 0,
+				"out_len": 0,
+			})
+			return resp
 		name = _extract_name_with_groq(q, ms_text)
 		out = (name or ms_text or "").strip()
 		if not out:
-			return web.json_response({"error": "no answer produced"}, status=502)
-		return web.Response(text=out)
+			resp = web.json_response({"error": "no answer produced"}, status=502)
+			await _record_request_stat({
+				"ts": int(time.time()),
+				"source": "http_test",
+				"dur": round(max(0.0, time.monotonic() - t0), 1),
+				"ok": ok,
+				"q_len": len(q),
+				"ms_len": len((ms_text or "").strip()),
+				"out_len": 0,
+			})
+			return resp
+		ok = True
+		resp = web.Response(text=out)
+		await _record_request_stat({
+			"ts": int(time.time()),
+			"source": "http_test",
+			"dur": round(max(0.0, time.monotonic() - t0), 1),
+			"ok": ok,
+			"q_len": len(q),
+			"ms_len": len((ms_text or "").strip()),
+			"out_len": len(out),
+		})
+		return resp
+
+	async def _stats_startup(_: web.Application) -> None:
+		global _STATS_TASK
+		if _STATS_TASK is None or _STATS_TASK.done():
+			_STATS_TASK = asyncio.create_task(_stats_flush_loop())
+
+	async def _stats_cleanup(_: web.Application) -> None:
+		await _flush_stats_now()
+		if _STATS_TASK and not _STATS_TASK.done():
+			_STATS_TASK.cancel()
+			try:
+				await _STATS_TASK
+			except asyncio.CancelledError:
+				pass
 
 	app.router.add_get("/_health", health)
 	app.router.add_get("/test", test)
+	app.on_startup.append(_stats_startup)
+	app.on_cleanup.append(_stats_cleanup)
 	return app
 
 if __name__ == "__main__":
