@@ -3,6 +3,8 @@ from dotenv import load_dotenv
 from aiohttp import web, ClientSession
 import requests
 import logging
+from groq import Groq
+import tiktoken
 
 GREETED_CHAT_IDS: set[int] = set[int]()
 
@@ -14,6 +16,60 @@ TOKEN_LIMIT = 6000
 SAFETY_TOKENS = 200
 
 MS_TIMEOUT_SEC = 36
+
+def _trim_to_token_limit(instruction_prefix: str, text: str, token_limit: int, safety: int) -> tuple[str, dict]:
+	enc = tiktoken.get_encoding("cl100k_base")
+	pref_tokens = enc.encode(instruction_prefix or "")
+	text_tokens = enc.encode(text or "")
+	budget = max(0, token_limit - len(pref_tokens) - max(0, safety))
+	keep = min(len(text_tokens), budget)
+	trimmed_text = enc.decode(text_tokens[:keep]) if keep > 0 else ""
+	return trimmed_text, {
+		"pref_tokens": len(pref_tokens),
+		"text_tokens": len(text_tokens),
+		"budget": budget,
+		"kept": keep,
+		"total_after": len(pref_tokens) + keep,
+	}
+
+def _extract_name_with_groq(query: str, text: str) -> str:
+	text = (text or "").strip()
+	if not text:
+		return ""
+	api_key = os.environ.get("GROQ_API_KEY")
+	if not api_key:
+		logging.warning("GROQ_API_KEY not set")
+		return ""
+	system_prompt = (
+		"Ты помощник-экстрактор фактов. Отвечай строго одним полным именем в именительном падеже."
+		" Никаких дополнительных слов, знаков или комментариев. Если данных недостаточно — выдай пустую строку."
+	)
+	prefix = (
+		"В следующем тексте твоя задача выдать наиболее актуальную информацию, отвечающую кто сейчас \"{q}\". "
+		"Отвечай одним полным именем, например \"Иван Остапович Озёрный\" или \"Екатерина Васильевна Глухих\". "
+		"Ты не можешь вставить в ответ ничего кроме одного единственного полного имени. "
+		"Информация с более поздней датой имеет приоритет.\n\n"
+		"Текст:\n"
+	).format(q=(query or ""))
+	trimmed_text, _ = _trim_to_token_limit(prefix, text, TOKEN_LIMIT, SAFETY_TOKENS)
+	user_prompt = prefix + trimmed_text
+	try:
+		client = Groq(api_key=api_key)
+		resp = client.chat.completions.create(
+			model="llama-3.1-8b-instant",
+			messages=[
+				{"role": "system", "content": system_prompt},
+				{"role": "user", "content": user_prompt},
+			],
+			temperature=0.2,
+			max_tokens=64,
+			top_p=1,
+			stream=False,
+		)
+		return ((resp.choices[0].message.content or "").strip())
+	except Exception:
+		logging.exception("groq extract failed")
+		return ""
 
 GREETED_PATH = os.path.join(os.path.dirname(__file__), "greeted.json")
 
@@ -66,9 +122,7 @@ async def ask_alice(query: str, on_start = None) -> str:
 			pass
 	t0 = time.monotonic()
 	try:
-		prefix = "отвечай одним полным именем в формате\n\nФамилия Имя Отчество\n\n\n\n"
-		payload = (prefix + (query or ""))
-		resp = requests.get(url, params={"q": payload}, timeout=MS_TIMEOUT_SEC)
+		resp = requests.get(url, params={"q": query}, timeout=MS_TIMEOUT_SEC)
 		if resp.status_code >= 400:
 			logging.warning("alice ms http=%s", resp.status_code)
 			return ""
@@ -189,10 +243,10 @@ async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
 			logging.exception("processing failed")
 			answer = ""
 		try:
-			answer = (answer or "").strip()
-			if not answer:
-				answer = "нет ответа"
-			for chunk in _split_telegram_messages(answer):
+			ms_text = (answer or "").strip()
+			name = _extract_name_with_groq(text, ms_text)
+			final = (name or ms_text or "нет ответа").strip()
+			for chunk in _split_telegram_messages(final):
 				await _send_message(session, bot_token, chat_id, chunk)
 		finally:
 			if status_id:
@@ -238,16 +292,20 @@ def create_app() -> web.Application:
 				"hint": "Set ALICE_URL in .env, e.g. http://127.0.0.1:3000",
 			}, status=500)
 		try:
-			ans = await ask_alice(q)
+			ms_text = await ask_alice(q)
 		except Exception as e:
 			logging.exception("test failed")
 			return web.json_response({
 				"error": "processing failed",
 				"reason": str(e),
 			}, status=500)
-		if not ans:
+		if not ms_text:
 			return web.json_response({"error": "no answer produced"}, status=502)
-		return web.Response(text=ans)
+		name = _extract_name_with_groq(q, ms_text)
+		out = (name or ms_text or "").strip()
+		if not out:
+			return web.json_response({"error": "no answer produced"}, status=502)
+		return web.Response(text=out)
 
 	app.router.add_get("/_health", health)
 	app.router.add_get("/test", test)
