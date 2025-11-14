@@ -299,7 +299,7 @@ async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
 		status_id = await _send_message_get_id(session, bot_token, chat_id, "Ищу")
 		async def on_llm_start():
 			if status_id:
-				await _edit_message_text(session, bot_token, chat_id, status_id, "Думаю")
+				await _edit_message_text(session, bot_token, chat_id, status_id, "Ищу")
 		try:
 			answer = await ask_alice(text, on_llm_start)
 		except Exception:
