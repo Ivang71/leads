@@ -78,26 +78,24 @@ def _extract_name_with_groq(query: str, text: str) -> str:
 	if not api_key:
 		logging.warning("GROQ_API_KEY not set")
 		return ""
-	system_prompt = (
-		"Ты помощник-экстрактор фактов. Отвечай строго одним полным именем в именительном падеже."
-		" Никаких дополнительных слов, знаков или комментариев. Если данных недостаточно — выдай пустую строку."
-	)
-	prefix = (
-		"В следующем тексте твоя задача выдать наиболее актуальную информацию, отвечающую кто сейчас \"{q}\". "
-		"Отвечай одним полным именем, например \"Иван Остапович Озёрный\" или \"Екатерина Васильевна Глухих\". "
-		"Ты не можешь вставить в ответ ничего кроме одного единственного полного имени. "
-		"Информация с более поздней датой имеет приоритет.\n\n"
-		"Текст:\n"
-	).format(q=(query or ""))
-	trimmed_text, _ = _trim_to_token_limit(prefix, text, TOKEN_LIMIT, SAFETY_TOKENS)
-	user_prompt = prefix + trimmed_text
+	system_prompt = ("Ты помощник-экстрактор данных. Выдавай исключительно что просит пользователь без дополнительных комментариев.")
+	control_prompt = (f"""
+		В следующем тексте твоя задача выдать наиболее актуальную информацию, отвечающую кто сейчас {query}. 
+		Отвечай исключительно в формате "[модификатор]\nПолное имя, Должность" например "[exact]\nИван Остапович Озёрный, Директор по развитию"
+		или "[alternative]\nЕкатерина Васильевна Глухих, Head of Marketing, kate@example.com\nМихаил Александрович Кузнецов, Head of Sales". 
+		Модификаторы точности: [exact] - точное совпадение, [alternative] - альтернативные должности (используй если точное совпадение не найдено).\n
+		Ты можешь выдать несколько альтернативных если они предлагаются как несколько уникальных имён.\nДобавляй почту если она есть в тексте.\n
+		Не выдавай позиции без имени. Если данных недостаточно — выдай абсолютно пустую строку.\nТекст:\n\n
+	""")
+	trimmed_text, _ = _trim_to_token_limit(control_prompt, text, TOKEN_LIMIT, SAFETY_TOKENS)
+	prompt = control_prompt + trimmed_text
 	try:
 		client = Groq(api_key=api_key)
 		resp = client.chat.completions.create(
 			model="llama-3.1-8b-instant",
 			messages=[
 				{"role": "system", "content": system_prompt},
-				{"role": "user", "content": user_prompt},
+				{"role": "user", "content": prompt},
 			],
 			temperature=0.2,
 			max_tokens=64,
@@ -108,6 +106,27 @@ def _extract_name_with_groq(query: str, text: str) -> str:
 	except Exception:
 		logging.exception("groq extract failed")
 		return ""
+
+def _parse_groq_tag(s: str) -> tuple[str | None, str]:
+	s = (s or "").strip()
+	if not s:
+		return None, ""
+	m = re.match(r"^\s*\[(exact|alternative)\]\s*(.*)$", s, flags=re.IGNORECASE)
+	if m:
+		tag = (m.group(1) or "").lower()
+		rest = (m.group(2) or "").strip()
+		return tag, rest
+	return None, s
+
+def _format_extracted_name(s: str) -> str:
+	tag, rest = _parse_groq_tag(s)
+	if not rest:
+		return ""
+	if tag == "exact":
+		return f"Точное совпадение: {rest}"
+	if tag == "alternative":
+		return f"Точное совпадение не найдено, альтернатива: {rest}"
+	return rest
 
 GREETED_PATH = os.path.join(os.path.dirname(__file__), "greeted.json")
 
@@ -289,7 +308,8 @@ async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
 			ms_len = len(ms_text)
 			ok_flag = bool(ms_text)
 			name = _extract_name_with_groq(text, ms_text)
-			final = (name or ms_text or "нет ответа").strip()
+			final_name = _format_extracted_name(name)
+			final = (final_name or ms_text or "нет ответа").strip()
 			tg_len = len(final)
 			for chunk in _split_telegram_messages(final):
 				await _send_message(session, bot_token, chat_id, chunk)
@@ -378,7 +398,7 @@ def create_app() -> web.Application:
 			})
 			return resp
 		name = _extract_name_with_groq(q, ms_text)
-		out = (name or ms_text or "").strip()
+		out = (_format_extracted_name(name) or (ms_text or "").strip())
 		if not out:
 			resp = web.json_response({"error": "no answer produced"}, status=502)
 			await _record_request_stat({
