@@ -66,7 +66,9 @@ async def ask_alice(query: str, on_start = None) -> str:
 			pass
 	t0 = time.monotonic()
 	try:
-		resp = requests.get(url, params={"q": query}, timeout=MS_TIMEOUT_SEC)
+		prefix = "отвечай одним полным именем в формате\n\nФамилия Имя Отчество\n\n\n\n"
+		payload = (prefix + (query or ""))
+		resp = requests.get(url, params={"q": payload}, timeout=MS_TIMEOUT_SEC)
 		if resp.status_code >= 400:
 			logging.warning("alice ms http=%s", resp.status_code)
 			return ""
