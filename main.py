@@ -15,6 +15,44 @@ SAFETY_TOKENS = 200
 
 MS_TIMEOUT_SEC = 36
 
+GREETED_PATH = os.path.join(os.path.dirname(__file__), "greeted.json")
+
+def _atomic_write_text(path: str, text: str) -> None:
+	tmp = path + ".tmp"
+	with open(tmp, "w", encoding="utf-8") as wf:
+		wf.write(text)
+	os.replace(tmp, path)
+
+def _load_greeted(path: str) -> set[int]:
+	try:
+		with open(path, "r", encoding="utf-8") as rf:
+			data = json.load(rf)
+			if isinstance(data, list):
+				out = set()
+				for it in data:
+					try:
+						out.add(int(it))
+					except Exception:
+						continue
+				return out
+	except FileNotFoundError:
+		return set()
+	except Exception:
+		logging.exception("failed to load greeted set")
+		return set()
+	return set()
+
+async def _save_greeted(ids: set[int]) -> None:
+	def _do():
+		try:
+			_atomic_write_text(GREETED_PATH, json.dumps(sorted(list(ids))))
+		except Exception:
+			logging.exception("failed to save greeted set")
+	return await asyncio.to_thread(_do)
+
+# initialize greeted set from disk
+GREETED_CHAT_IDS = _load_greeted(GREETED_PATH)
+
 async def ask_alice(query: str, on_start = None) -> str:
 	base = (os.environ.get("ALICE_URL")).strip()
 	if not base:
@@ -135,6 +173,10 @@ async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
 		if chat_id not in GREETED_CHAT_IDS:
 			await _send_message(session, bot_token, chat_id, "👋 Hi! Send me a query.")
 			GREETED_CHAT_IDS.add(chat_id)
+			try:
+				await _save_greeted(GREETED_CHAT_IDS)
+			except Exception:
+				pass
 		status_id = await _send_message_get_id(session, bot_token, chat_id, "Ищу")
 		async def on_llm_start():
 			if status_id:
@@ -146,9 +188,10 @@ async def _process_update(bot_token: str, chat_id: int, text: str) -> None:
 			answer = ""
 		try:
 			answer = (answer or "").strip()
-			if answer:
-				for chunk in _split_telegram_messages(answer):
-					await _send_message(session, bot_token, chat_id, chunk)
+			if not answer:
+				answer = "нет ответа"
+			for chunk in _split_telegram_messages(answer):
+				await _send_message(session, bot_token, chat_id, chunk)
 		finally:
 			if status_id:
 				await _delete_message(session, bot_token, chat_id, status_id)
