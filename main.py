@@ -70,22 +70,27 @@ def _trim_to_token_limit(instruction_prefix: str, text: str, token_limit: int, s
 		"total_after": len(pref_tokens) + keep,
 	}
 
-def _extract_name_with_groq(query: str, text: str) -> str:
+def _extract_name_with_groq(query: str, text: str) -> dict:
 	text = (text or "").strip()
 	if not text:
-		return ""
+		return {}
 	api_key = os.environ.get("GROQ_API_KEY")
 	if not api_key:
 		logging.warning("GROQ_API_KEY not set")
-		return ""
-	system_prompt = ("Ты помощник-экстрактор данных. Выдавай исключительно что просит пользователь без дополнительных комментариев.")
+		return {}
+	system_prompt = ("Ты помощник-экстрактор данных. Возвращай только валидный JSON без комментариев.")
 	control_prompt = (f"""
-		В следующем тексте твоя задача выдать наиболее актуальную информацию, отвечающую кто сейчас {query}. 
-		Отвечай исключительно в формате "[модификатор]\nПолное имя, Должность" например "[exact]\nИван Остапович Озёрный, Директор по развитию"
-		или "[alternative]\nЕкатерина Васильевна Глухих, Head of Marketing, kate@example.com\nМихаил Александрович Кузнецов, Head of Sales". 
-		Модификаторы точности: [exact] - точное совпадение, [alternative] - альтернативные должности (используй если точное совпадение не найдено).\n
-		Ты можешь выдать несколько альтернативных если они предлагаются как несколько уникальных имён.\nДобавляй почту если она есть в тексте.\n
-		Не выдавай позиции без имени. Если данных недостаточно — выдай абсолютно пустую строку.\nТекст:\n\n
+		Извлеки из текста наиболее актуальную информацию, кто сейчас {query}.
+		Верни JSON-объект строго такого вида:
+		{{
+			"type": "exact" | "alternative" | "none",
+			"candidates": [{{"full_name": string, "position": string, "email": string | null}}]
+		}}
+		Правила:
+		- "exact" для точного совпадения; "alternative" если точного нет, но есть близкие должности; "none" если данных нет.
+		- "candidates" может содержать несколько объектов. Email указывай если есть, иначе null.
+		- Не добавляй пояснений, текста вне JSON и не нарушай структуру.
+		Текст:\n\n
 	""")
 	trimmed_text, _ = _trim_to_token_limit(control_prompt, text, TOKEN_LIMIT, SAFETY_TOKENS)
 	prompt = control_prompt + trimmed_text
@@ -101,11 +106,38 @@ def _extract_name_with_groq(query: str, text: str) -> str:
 			max_tokens=64,
 			top_p=1,
 			stream=False,
+			response_format={"type": "json_object"},
 		)
-		return ((resp.choices[0].message.content or "").strip())
+		raw = (resp.choices[0].message.content or "").strip()
+		try:
+			data = json.loads(raw)
+			if not isinstance(data, dict):
+				return {}
+			t = data.get("type")
+			if t not in ("exact", "alternative", "none"):
+				data["type"] = "none"
+			cands = data.get("candidates") or []
+			if isinstance(cands, list):
+				norm = []
+				for c in cands:
+					if not isinstance(c, dict):
+						continue
+					full_name = (c.get("full_name") or "").strip()
+					position = (c.get("position") or "").strip()
+					email = (c.get("email") or None)
+					email = (email or "").strip() or None
+					if full_name and position:
+						norm.append({"full_name": full_name, "position": position, "email": email})
+				data["candidates"] = norm
+			else:
+				data["candidates"] = []
+			return data
+		except Exception:
+			logging.warning("groq returned non-JSON")
+			return {}
 	except Exception:
 		logging.exception("groq extract failed")
-		return ""
+		return {}
 
 def _parse_groq_tag(s: str) -> tuple[str | None, str]:
 	s = (s or "").strip()
@@ -118,15 +150,24 @@ def _parse_groq_tag(s: str) -> tuple[str | None, str]:
 		return tag, rest
 	return None, s
 
-def _format_extracted_name(s: str) -> str:
-	tag, rest = _parse_groq_tag(s)
-	if not rest:
+def _format_extracted_name(data) -> str:
+	if not isinstance(data, dict):
 		return ""
-	if tag == "exact":
-		return f"Точное совпадение: {rest}"
-	if tag == "alternative":
-		return f"Точное совпадение не найдено, альтернатива: {rest}"
-	return rest
+	t = (data.get("type") or "none").lower()
+	cands = data.get("candidates") or []
+	if t == "none" or not cands:
+		return ""
+	def _fmt(c):
+		p = f"{c.get('full_name')}, {c.get('position')}"
+		if c.get("email"):
+			p += f", {c.get('email')}"
+		return p
+	if t == "exact":
+		return f"Точное совпадение: {_fmt(cands[0])}"
+	if t == "alternative":
+		lines = "\n".join(_fmt(c) for c in cands)
+		return f"Точное совпадение не найдено, альтернатива:\n{lines}"
+	return "\n".join(_fmt(c) for c in cands)
 
 GREETED_PATH = os.path.join(os.path.dirname(__file__), "greeted.json")
 
@@ -173,7 +214,7 @@ async def ask_alice(query: str, on_start = None) -> str:
 		return ""
 	url = (base.rstrip("/") + "/search")
 	q_text = (query or "").strip()
-	search_q = f"найди {q_text} либо близкие должности"
+	search_q = f"найди {q_text} либо близкие должности в этой компании"
 	if callable(on_start):
 		try:
 			await on_start()
