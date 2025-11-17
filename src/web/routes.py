@@ -1,7 +1,6 @@
 import time, logging
 from aiohttp import web
-from ..clients.alice import ask_alice
-from ..llm.extract import extract_name_with_groq, format_extracted_name
+from ..core.processor import process_query
 from ..stats import record_request_stat
 
 async def health(_: web.Request) -> web.Response:
@@ -16,51 +15,25 @@ async def test(request: web.Request) -> web.Response:
 		await record_request_stat({"ts": int(time.time()), "source": "http_test", "dur": round(max(0.0, time.monotonic() - t0), 1), "ok": ok, "q_len": 0})
 		return resp
 	try:
-		ms_text = await ask_alice(q)
+		res = await process_query(q)
 	except Exception as e:
 		logging.exception("test failed")
-		resp = web.json_response({
-			"error": "processing failed",
-			"reason": str(e),
-		}, status=500)
-		await record_request_stat({"ts": int(time.time()), "source": "http_test", "dur": round(max(0.0, time.monotonic() - t0), 1), "ok": ok, "q_len": len(q)})
-		return resp
-	if not ms_text:
-		resp = web.json_response({"error": "no answer produced"}, status=502)
-		await record_request_stat({
-			"ts": int(time.time()),
-			"source": "http_test",
-			"dur": round(max(0.0, time.monotonic() - t0), 1),
-			"ok": ok,
-			"q_len": len(q),
-			"ms_len": 0,
-			"out_len": 0,
-		})
-		return resp
-	name = extract_name_with_groq(q, ms_text)
-	out = (format_extracted_name(name) or (ms_text or "").strip())
-	if not out:
-		resp = web.json_response({"error": "no answer produced"}, status=502)
-		await record_request_stat({
-			"ts": int(time.time()),
-			"source": "http_test",
-			"dur": round(max(0.0, time.monotonic() - t0), 1),
-			"ok": ok,
-			"q_len": len(q),
-			"ms_len": len((ms_text or "").strip()),
-			"out_len": 0,
-		})
-		return resp
-	ok = True
-	resp = web.Response(text=out)
+		return web.json_response({"error": "processing failed", "reason": str(e)}, status=500)
+	final_text = (res.get("final_text") or "").strip()
+	ms_len = int(res.get("ms_len", 0))
+	ok = bool(res.get("ok", False))
+	if not final_text:
+		await record_request_stat({"ts": int(time.time()), "source": "http_test", "dur": round(max(0.0, time.monotonic() - t0), 1), "ok": False, "q_len": len(q), "ms_len": ms_len, "out_len": 0})
+		return web.json_response({"error": "no answer produced"}, status=502)
+	resp = web.Response(text=final_text)
 	await record_request_stat({
 		"ts": int(time.time()),
 		"source": "http_test",
 		"dur": round(max(0.0, time.monotonic() - t0), 1),
 		"ok": ok,
 		"q_len": len(q),
-		"ms_len": len((ms_text or "").strip()),
-		"out_len": len(out),
+		"ms_len": ms_len,
+		"out_len": len(final_text),
 	})
 	return resp
 

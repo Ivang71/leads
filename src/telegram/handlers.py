@@ -1,8 +1,7 @@
 import time, logging
 from aiogram import types
 from aiogram.enums import ChatAction
-from ..clients.alice import ask_alice
-from ..llm.extract import extract_name_with_groq, format_extracted_name
+from ..core.processor import process_query
 from ..storage.greeted import GREETED_CHAT_IDS, save_greeted
 from ..stats import record_request_stat
 from ..utils.text import split_telegram_messages
@@ -32,18 +31,12 @@ async def handle_text(message: types.Message):
 			await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 		except Exception:
 			pass
-	try:
-		ms_text = await ask_alice(message.text or "", on_llm_start)
-	except Exception:
-		logging.exception("processing failed")
-		ms_text = ""
 	final = ""
 	try:
-		ms = (ms_text or "").strip()
-		ms_len = len(ms)
-		ok_flag = bool(ms)
-		name = extract_name_with_groq(message.text or "", ms)
-		final = (format_extracted_name(name) or ms or "нет ответа").strip()
+		res = await process_query(message.text or "", on_llm_start)
+		ok_flag = res.get("ok", False)
+		ms_len = int(res.get("ms_len", 0))
+		final = (res.get("final_text") or "").strip()
 		out_len = len(final)
 		for chunk in split_telegram_messages(final):
 			await message.answer(chunk)
