@@ -5,7 +5,7 @@ __pycache__
 
 .env
 *.json
+*.jsonl
 *.html
 *.txt
-stat.jsonl
 

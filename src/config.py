@@ -19,4 +19,5 @@ ALICE_URL = (os.getenv("ALICE_URL") or "").strip()
 STATS_PATH = os.path.join(PROJECT_ROOT, "stat.jsonl")
 GREETED_PATH = os.path.join(PROJECT_ROOT, "greeted.json")
 
+SERPER_RESULTS_PATH = os.path.join(PROJECT_ROOT, "serper_results.jsonl")
 
