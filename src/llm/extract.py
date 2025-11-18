@@ -38,25 +38,38 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 		- "exact" для точного совпадения; "alternative" если точного нет, но есть близкие должности; "none" если данных нет.
 		- "candidates" может содержать несколько объектов. Email указывай если есть, иначе null.
 		- Не добавляй пояснений, текста вне JSON и не нарушай структуру.
+		- Ты можешь вернуть только этот json и ничего больше.
 		Текст:\n\n
 	""")
 	trimmed_text, _ = _trim_to_token_limit(control_prompt, text, config.TOKEN_LIMIT, config.SAFETY_TOKENS)
 	prompt = control_prompt + trimmed_text
 	try:
 		client = Groq(api_key=api_key)
-		resp = client.chat.completions.create(
-			model="llama-3.1-8b-instant",
-			messages=[
-				{"role": "system", "content": system_prompt},
-				{"role": "user", "content": prompt},
-			],
-			temperature=0.2,
-			max_tokens=64,
-			top_p=1,
-			stream=False,
-			response_format={"type": "json_object"},
-		)
-		raw = (resp.choices[0].message.content or "").strip()
+		raw = None
+		for attempt in range(5):
+			resp = client.chat.completions.create(
+				model="llama-3.1-8b-instant",
+				messages=[
+					{"role": "system", "content": system_prompt},
+					{"role": "user", "content": prompt},
+				],
+				temperature=0.2,
+				max_tokens=64,
+				top_p=1,
+				stream=False,
+				response_format={"type": "json_object"},
+			)
+			raw = (resp.choices[0].message.content or "").strip()
+			if len(raw) <= 600:
+				break
+			if os.environ.get("DEBUG") == "1":
+				logging.warning("groq response too long (%d chars), retrying...", len(raw))
+		if raw is None or len(raw) > 600:
+			if os.environ.get("DEBUG") == "1" and raw:
+				logging.warning("groq response still too long after retries (%d chars), treating as failed", len(raw))
+			return {}
+		if os.environ.get("DEBUG") == "1":
+			logging.info("\n\ngroq response: %s", raw)
 		try:
 			data = json.loads(raw)
 			if not isinstance(data, dict):
