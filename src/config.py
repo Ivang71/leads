@@ -15,6 +15,7 @@ TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN") or ""
 TG_WEBHOOK_SECRET = os.getenv("TG_WEBHOOK_SECRET") or ""
 TG_WEBHOOK_URL = os.getenv("TG_WEBHOOK_URL") or ""
 ALICE_URL = (os.getenv("ALICE_URL") or "").strip()
+ALICE_API_KEY = (os.getenv("ALICE_API_KEY") or "").strip()
 
 STATS_PATH = os.path.join(PROJECT_ROOT, "stat.jsonl")
 GREETED_PATH = os.path.join(PROJECT_ROOT, "greeted.json")

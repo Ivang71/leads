@@ -8,7 +8,11 @@ async def ask_alice(query: str, on_start=None) -> str:
 	if not base:
 		logging.warning("ALICE_URL not set")
 		return ""
-	url = (base.rstrip("/") + "/search")
+	api_key = (config.ALICE_API_KEY or "").strip()
+	if not api_key:
+		logging.warning("ALICE_API_KEY not set")
+		return ""
+	url = base.rstrip("/") + "/search"
 	q_text = (query or "").strip()
 	search_q = f"найди {q_text} либо близкие должности в этой компании"
 	if callable(on_start):
@@ -18,8 +22,9 @@ async def ask_alice(query: str, on_start=None) -> str:
 			pass
 	t0 = time.monotonic()
 	session = get_session()
+	headers = {"X-API-Key": api_key}
 	try:
-		async with session.get(url, params={"q": search_q}) as resp:
+		async with session.get(url, params={"q": search_q}, headers=headers) as resp:
 			if resp.status >= 400:
 				logging.warning("alice ms http=%s", resp.status)
 				return ""
