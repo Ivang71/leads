@@ -18,6 +18,8 @@ def create_bot_and_dispatcher() -> tuple[Bot, Dispatcher, str | None]:
 	# register handlers
 	dp.message.register(handlers.cmd_start, CommandStart())
 	dp.message.register(handlers.cmd_help, Command("help"))
+	dp.message.register(handlers.cmd_id, Command("id"))
+	dp.message.register(handlers.cmd_subscribe, Command("subscribe"))
 	dp.message.register(handlers.handle_text)
 	BOT_CTX.bot = bot
 	BOT_CTX.dp = dp

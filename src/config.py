@@ -17,8 +17,12 @@ TG_WEBHOOK_URL = os.getenv("TG_WEBHOOK_URL") or ""
 ALICE_URL = (os.getenv("ALICE_URL") or "").strip()
 ALICE_API_KEY = (os.getenv("ALICE_API_KEY") or "").strip()
 
+FREEKASSA_MERCHANT_ID = os.getenv("FREEKASSA_MERCHANT_ID")
+FREEKASSA_SECRET1 = os.getenv("FREEKASSA_SECRET1")
+FREEKASSA_SECRET2 = os.getenv("FREEKASSA_SECRET2")
+
 STATS_PATH = os.path.join(PROJECT_ROOT, "stat.jsonl")
 GREETED_PATH = os.path.join(PROJECT_ROOT, "greeted.json")
-
+USERS_PATH = os.path.join(PROJECT_ROOT, "users.json")
 SERPER_RESULTS_PATH = os.path.join(PROJECT_ROOT, "serper_results.jsonl")
 

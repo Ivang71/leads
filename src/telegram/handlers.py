@@ -1,10 +1,12 @@
-import time, logging
+import time, logging, hashlib
 from aiogram import types
 from aiogram.enums import ChatAction
 from ..core.processor import process_query
 from ..storage.greeted import GREETED_CHAT_IDS, save_greeted
 from ..stats import record_request_stat
 from ..utils.text import split_telegram_messages
+from ..storage.users import get_or_create_uid_for_telegram, get_subscription_status
+from .. import config
 
 async def cmd_start(message: types.Message):
 	chat_id = message.chat.id
@@ -18,6 +20,37 @@ async def cmd_start(message: types.Message):
 
 async def cmd_help(message: types.Message):
 	await message.answer("Примеры:\n- CEO Acme Corp\n- [alternative] Head of Sales Globex\nПросто отправьте текст — я поищу и извлеку имя/должность/почту.")
+
+
+async def cmd_id(message: types.Message):
+	uid = await get_or_create_uid_for_telegram(message.chat.id)
+	await message.answer(f"Твой ID: `{uid}`", parse_mode="Markdown")
+
+
+async def cmd_subscribe(message: types.Message):
+	if not (config.FREEKASSA_MERCHANT_ID and config.FREEKASSA_SECRET1):
+		await message.answer("Платежи пока не настроены.")
+		return
+	uid = await get_or_create_uid_for_telegram(message.chat.id)
+	amount = "300"
+	currency = "RUB"
+	order_id = f"{uid}-{int(time.time())}"
+	raw = f"{config.FREEKASSA_MERCHANT_ID}:{amount}:{config.FREEKASSA_SECRET1}:{currency}:{order_id}"
+	sign = hashlib.md5(raw.encode("utf-8")).hexdigest()
+	url = (
+		"https://pay.freekassa.ru/"
+		f"?m={config.FREEKASSA_MERCHANT_ID}"
+		f"&oa={amount}"
+		f"&o={order_id}"
+		f"&currency={currency}"
+		f"&s={sign}"
+		f"&us_uid={uid}"
+	)
+	active, active_until = get_subscription_status(uid)
+	if active:
+		await message.answer(f"У тебя уже есть активная подписка.\nСсылка на продление на 30 дней за 300₽:\n{url}")
+	else:
+		await message.answer(f"Подписка на 30 дней за 300₽:\n{url}")
 
 async def handle_text(message: types.Message):
 	t0 = time.monotonic()
