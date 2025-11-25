@@ -14,7 +14,7 @@ async def ask_alice(query: str, on_start=None) -> str:
 		return ""
 	url = base.rstrip("/") + "/search"
 	q_text = (query or "").strip()
-	search_q = f"найди {q_text} либо близкие должности в этой компании"
+	search_q = f"найди {q_text} либо близкие должности в этой компании и укажи их сайт"
 	if callable(on_start):
 		try:
 			await on_start()
