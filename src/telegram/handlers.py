@@ -32,7 +32,7 @@ async def cmd_subscribe(message: types.Message):
 		await message.answer("Платежи пока не настроены.")
 		return
 	uid = await get_or_create_uid_for_telegram(message.chat.id)
-	amount = "300"
+	amount = "49"
 	currency = "RUB"
 	order_id = f"{uid}-{int(time.time())}"
 	raw = f"{config.FREEKASSA_MERCHANT_ID}:{amount}:{config.FREEKASSA_SECRET1}:{currency}:{order_id}"
