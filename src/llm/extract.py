@@ -29,7 +29,7 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 	system_prompt = ("Ты помощник-экстрактор данных. Возвращай только валидный JSON без комментариев.")
 	control_prompt = (f"""
 		Извлеки из текста наиболее актуальную информацию, кто сейчас {query}.
-		Верни JSON-объект строго такого вида:
+		Возвращай СТРОГО JSON-объект строго такого вида:
 		{{
 			"type": "exact" | "alternative" | "none",
 			"candidates": [{{"full_name": string, "position": string, "email": string[]}}]
