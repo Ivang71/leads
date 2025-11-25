@@ -103,7 +103,7 @@ async def process_query(user_text: str, on_progress: Callable[[], Awaitable[None
 	if os.environ.get("DEBUG") == "1":
 		logging.info("\n\nalice response: %s", ms)
 	name = extract_name_with_groq(user_text or "", ms)
-	final_text = (format_extracted_name(name) or ms or "нет ответа").strip()
+	final_text = (format_extracted_name(name) or "нет ответа").strip()
 	return {
 		"ok": bool(ms),
 		"ms_len": len(ms),
