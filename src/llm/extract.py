@@ -32,11 +32,11 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 		Верни JSON-объект строго такого вида:
 		{{
 			"type": "exact" | "alternative" | "none",
-			"candidates": [{{"full_name": string, "position": string, "email": string | null}}]
+			"candidates": [{{"full_name": string, "position": string, "email": string[]}}]
 		}}
 		Правила:
-		- "exact" для точного совпадения; "alternative" если точного нет, но есть близкие должности; "none" если данных нет.
-		- "candidates" может содержать несколько объектов. Email указывай если есть, иначе null.
+		- "exact" означает точное совпадение; "alternative" означает близкие должности; "none" означает отсутствие подходящих данных.
+		- "candidates" может содержать несколько объектов. В каждом укажи "full_name", "position" и два варианта email этого человека в поле "email" по шаблонам ivan.ivanov@company.ru i.ivanov@company.ru для Иван Иванов Иванович.
 		- Не добавляй пояснений, текста вне JSON и не нарушай структуру.
 		- Ты можешь вернуть только этот json и ничего больше.
 		Текст:\n\n
@@ -46,6 +46,8 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 	try:
 		client = Groq(api_key=api_key)
 		raw = None
+		if os.environ.get("DEBUG") == "1":
+			logging.info("groq extract prompt: %s", prompt)
 		for attempt in range(5):
 			resp = client.chat.completions.create(
 				model="llama-3.1-8b-instant",
@@ -54,7 +56,7 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 					{"role": "user", "content": prompt},
 				],
 				temperature=0.2,
-				max_tokens=64,
+				max_tokens=128,
 				top_p=1,
 				stream=False,
 				response_format={"type": "json_object"},
@@ -85,10 +87,20 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 						continue
 					full_name = (c.get("full_name") or "").strip()
 					position = (c.get("position") or "").strip()
-					email = (c.get("email") or None)
-					email = (email or "").strip() or None
-					if full_name and position:
-						norm.append({"full_name": full_name, "position": position, "email": email})
+					raw_email = c.get("email")
+					emails = []
+					if isinstance(raw_email, list):
+						for v in raw_email:
+							if isinstance(v, str):
+								s = v.strip()
+								if s and s not in emails:
+									emails.append(s)
+					elif isinstance(raw_email, str):
+						s = raw_email.strip()
+						if s:
+							emails.append(s)
+					if full_name and position and emails:
+						norm.append({"full_name": full_name, "position": position, "emails": emails[:2]})
 				data["candidates"] = norm
 			else:
 				data["candidates"] = []
@@ -96,7 +108,19 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 		except Exception:
 			logging.warning("groq returned non-JSON")
 			return {}
-	except Exception:
+	except Exception as e:
+		if os.environ.get("DEBUG") == "1":
+			resp = getattr(e, "response", None)
+			if resp is not None:
+				try:
+					body = getattr(resp, "text", None)
+					if callable(body):
+						body = body()
+					if not body:
+						body = str(resp)
+					logging.error("groq error response body: %s", body)
+				except Exception:
+					pass
 		logging.exception("groq extract failed")
 		return {}
 
@@ -107,14 +131,26 @@ def format_extracted_name(data) -> str:
 	cands = data.get("candidates") or []
 	if t == "none" or not cands:
 		return ""
+	def _emails(c):
+		out = []
+		for v in (c.get("emails") or []):
+			if isinstance(v, str):
+				s = v.strip()
+				if s and s not in out:
+					out.append(s)
+		return out[:2]
 	def _fmt(c):
-		p = f"{c.get('full_name')}, {c.get('position')}"
-		if c.get("email"):
-			p += f", {c.get('email')}"
-		return p
+		return f"{c.get('full_name')}, {c.get('position')}"
 	if t == "exact":
-		return f"Точное совпадение: {_fmt(cands[0])}"
+		base = _fmt(cands[0])
+		emails = _emails(cands[0])
+		if emails:
+			base += "\nВозможные email:\n" + "\n".join(emails)
+		return f"Точное совпадение: {base}"
 	if t == "alternative":
 		lines = "\n".join(_fmt(c) for c in cands)
+		emails = _emails(cands[0])
+		if emails:
+			lines += "\n\nВозможные email:\n" + "\n".join(emails)
 		return f"Точное совпадение не найдено, альтернатива:\n{lines}"
 	return "\n".join(_fmt(c) for c in cands)
