@@ -18,7 +18,7 @@ async def search_google(user_text: str) -> None:
 		system_prompt = "Ты помощник по формированию поисковых запросов. Верни только валидный JSON массив из ровно 2 строк-запросов. Никакого текста вне JSON."
 		user_prompt = f"Сформируй 2 кратких запроса для Google по тексту: \"{user_text}\". Верни массив из 2 строк. Например \"['shopify head of ecommerce', 'shopify head of business development']\"."
 		resp = client.chat.completions.create(
-			model="llama-3.1-8b-instant",
+			model="meta-llama/llama-4-scout-17b-16e-instruct",
 			messages=[
 				{"role": "system", "content": system_prompt},
 				{"role": "user", "content": user_prompt},

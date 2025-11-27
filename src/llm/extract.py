@@ -28,7 +28,7 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 		return {}
 	system_prompt = ("Ты помощник-экстрактор данных. Возвращай только валидный JSON без комментариев.")
 	control_prompt = (f"""
-		Извлеки из текста наиболее актуальную информацию, кто сейчас {query}.
+		Извлеки из текста кто сейчас {query}.
 		Возвращай СТРОГО JSON-объект строго такого вида:
 		{{
 			"type": "exact" | "alternative" | "none",
@@ -52,7 +52,7 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 		for attempt in range(3):
 			raw = None
 			resp = client.chat.completions.create(
-				model="llama-3.1-8b-instant",
+				model="meta-llama/llama-4-scout-17b-16e-instruct",
 				messages=[
 					{"role": "system", "content": system_prompt},
 					{"role": "user", "content": prompt},
