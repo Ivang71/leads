@@ -116,7 +116,7 @@ async def cmd_help(message: types.Message):
 
 async def cmd_id(message: types.Message):
 	uid = await get_or_create_uid_for_telegram(message.chat.id)
-	await message.answer(f"Твой ID: `{uid}`", parse_mode="Markdown")
+	await message.answer(f"Ваш ID: `{uid}`", parse_mode="Markdown")
 
 
 async def cmd_subscribe(message: types.Message):
@@ -165,9 +165,9 @@ async def cb_menu_profile(callback: types.CallbackQuery):
 	else:
 		ts = "нет"
 	if active:
-		text = f"Твой ID: `{uid}`\nПодписка активна до {ts}."
+		text = f"Ваш ID: `{uid}`\nПодписка активна до {ts}."
 	else:
-		text = f"Твой ID: `{uid}`\nПодписка неактивна. Дата окончания: {ts}."
+		text = f"Ваш ID: `{uid}`\nПодписка неактивна. Дата окончания: {ts}."
 	await callback.message.answer(text, parse_mode="Markdown")
 	await callback.answer()
 
