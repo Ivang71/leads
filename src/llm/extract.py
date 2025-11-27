@@ -45,10 +45,11 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 	prompt = control_prompt + trimmed_text
 	try:
 		client = Groq(api_key=api_key)
-		raw = None
 		if os.environ.get("DEBUG") == "1":
 			logging.info("groq extract prompt: %s", prompt)
+		last_data = None
 		for attempt in range(3):
+			raw = None
 			resp = client.chat.completions.create(
 				model="llama-3.1-8b-instant",
 				messages=[
@@ -66,52 +67,55 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 				if os.environ.get("DEBUG") == "1":
 					logging.warning("groq empty response, retrying...")
 				continue
-			if len(raw) <= 600:
-				break
+			if len(raw) > 600:
+				if os.environ.get("DEBUG") == "1":
+					logging.warning("groq response too long (%d chars), retrying...", len(raw))
+				continue
 			if os.environ.get("DEBUG") == "1":
-				logging.warning("groq response too long (%d chars), retrying...", len(raw))
-		if not raw or len(raw) > 600:
-			if os.environ.get("DEBUG") == "1" and raw:
-				logging.warning("groq response still too long after retries (%d chars), treating as failed", len(raw))
-			return {}
-		if os.environ.get("DEBUG") == "1":
-			logging.info("\n\ngroq response: %s", raw)
-		try:
-			data = json.loads(raw)
-			if not isinstance(data, dict):
-				return {}
-			t = data.get("type")
-			if t not in ("exact", "alternative", "none"):
-				data["type"] = "none"
-			cands = data.get("candidates") or []
-			if isinstance(cands, list):
-				norm = []
-				for c in cands:
-					if not isinstance(c, dict):
-						continue
-					full_name = (c.get("full_name") or "").strip()
-					position = (c.get("position") or "").strip()
-					raw_email = c.get("email")
-					emails = []
-					if isinstance(raw_email, list):
-						for v in raw_email:
-							if isinstance(v, str):
-								s = v.strip()
-								if s and s not in emails:
-									emails.append(s)
-					elif isinstance(raw_email, str):
-						s = raw_email.strip()
-						if s:
-							emails.append(s)
-					if full_name and position and emails:
-						norm.append({"full_name": full_name, "position": position, "emails": emails[:2]})
-				data["candidates"] = norm
-			else:
-				data["candidates"] = []
-			return data
-		except Exception:
-			logging.warning("groq returned non-JSON")
-			return {}
+				logging.info("\n\ngroq response: %s", raw)
+			try:
+				data = json.loads(raw)
+				if not isinstance(data, dict):
+					continue
+				t = (data.get("type") or "none").lower()
+				if t not in ("exact", "alternative", "none"):
+					t = "none"
+				data["type"] = t
+				cands = data.get("candidates") or []
+				if isinstance(cands, list):
+					norm = []
+					for c in cands:
+						if not isinstance(c, dict):
+							continue
+						full_name = (c.get("full_name") or "").strip()
+						position = (c.get("position") or "").strip()
+						raw_email = c.get("email")
+						emails = []
+						if isinstance(raw_email, list):
+							for v in raw_email:
+								if isinstance(v, str):
+									s = v.strip()
+									if s and s not in emails:
+										emails.append(s)
+						elif isinstance(raw_email, str):
+							s = raw_email.strip()
+							if s:
+								emails.append(s)
+						if full_name and position and emails:
+							norm.append({"full_name": full_name, "position": position, "emails": emails[:2]})
+					data["candidates"] = norm
+				else:
+					data["candidates"] = []
+				last_data = data
+				if t == "none" or not data["candidates"]:
+					if os.environ.get("DEBUG") == "1":
+						logging.info("groq type '%s' or no candidates, retrying (%d/3)...", t, attempt + 1)
+					continue
+				return data
+			except Exception:
+				logging.warning("groq returned non-JSON")
+				continue
+		return last_data or {}
 	except Exception as e:
 		if os.environ.get("DEBUG") == "1":
 			resp = getattr(e, "response", None)
