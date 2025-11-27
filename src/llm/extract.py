@@ -48,7 +48,7 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 		raw = None
 		if os.environ.get("DEBUG") == "1":
 			logging.info("groq extract prompt: %s", prompt)
-		for attempt in range(5):
+		for attempt in range(3):
 			resp = client.chat.completions.create(
 				model="llama-3.1-8b-instant",
 				messages=[
@@ -62,11 +62,15 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 				response_format={"type": "json_object"},
 			)
 			raw = (resp.choices[0].message.content or "").strip()
+			if not raw:
+				if os.environ.get("DEBUG") == "1":
+					logging.warning("groq empty response, retrying...")
+				continue
 			if len(raw) <= 600:
 				break
 			if os.environ.get("DEBUG") == "1":
 				logging.warning("groq response too long (%d chars), retrying...", len(raw))
-		if raw is None or len(raw) > 600:
+		if not raw or len(raw) > 600:
 			if os.environ.get("DEBUG") == "1" and raw:
 				logging.warning("groq response still too long after retries (%d chars), treating as failed", len(raw))
 			return {}
