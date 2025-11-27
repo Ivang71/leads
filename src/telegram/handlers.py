@@ -1,12 +1,51 @@
 import time, logging, hashlib
 from aiogram import types
 from aiogram.enums import ChatAction
+from aiogram.types import (
+	ReplyKeyboardMarkup,
+	KeyboardButton,
+	InlineKeyboardMarkup,
+	InlineKeyboardButton,
+)
 from ..core.processor import process_query
 from ..storage.greeted import GREETED_CHAT_IDS, save_greeted
 from ..stats import record_request_stat
 from ..utils.text import split_telegram_messages
 from ..storage.users import get_or_create_uid_for_telegram, get_subscription_status
 from .. import config
+
+_CHAT_MODE: dict[int, str] = {}
+_BUSY_CHATS: set[int] = set()
+
+_REPLY_MENU = ReplyKeyboardMarkup(
+	keyboard=[[KeyboardButton(text="Меню")]],
+	resize_keyboard=True,
+)
+
+_INLINE_MAIN_MENU = InlineKeyboardMarkup(
+	inline_keyboard=[
+		[
+			InlineKeyboardButton(text="Поиск", callback_data="menu_search"),
+			InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile"),
+		]
+	]
+)
+
+_INLINE_SEARCH_MENU = InlineKeyboardMarkup(
+	inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="menu_back")]]
+)
+
+
+async def _send_main_menu(message: types.Message):
+	chat_id = message.chat.id
+	_CHAT_MODE[chat_id] = "main"
+	text = (
+		"Добро пожаловать в поисковую систему «Вектор».\n\n"
+		"Мы помогаем превращать открытые источники в удобные данные для поиска и экспериментов.\n\n"
+		"Выберите действие:"
+	)
+	await message.answer(text, reply_markup=_INLINE_MAIN_MENU)
+
 
 async def cmd_start(message: types.Message):
 	chat_id = message.chat.id
@@ -16,10 +55,31 @@ async def cmd_start(message: types.Message):
 			await save_greeted(GREETED_CHAT_IDS)
 		except Exception:
 			pass
-	await message.answer("👋 Отправьте запрос вида: «CEO <компания>». Я поищу подходящих людей и контакты. Команды: /help")
+	_CHAT_MODE[chat_id] = "main"
+	name = (message.from_user.full_name or "").strip() if message.from_user else ""
+	if not name and message.from_user:
+		name = (message.from_user.username or "").strip()
+	await message.answer(
+		"🔮 Постоянная ссылка на бота\n\n"
+		"Актуальную ссылку на бота вы всегда найдёте на нашем сайте: https://example.com\n\n"
+		"Сохраните её, чтобы не потерять доступ к боту даже в случае блокировок.",
+		reply_markup=_REPLY_MENU,
+	)
+	greet = f"Привет, {name}!" if name else "Привет!"
+	await message.answer(f"{greet}\n\nРады видеть вас в системе «Вектор».")
+	await _send_main_menu(message)
+
 
 async def cmd_help(message: types.Message):
-	await message.answer("Примеры:\n- CEO Acme Corp\n- [alternative] Head of Sales Globex\nПросто отправьте текст — я поищу и извлеку имя/должность/почту.")
+	await message.answer(
+		"⬇️ Примеры запросов:\n\n"
+		"👤 Поиск по должности\n"
+		"├ Генеральный директор Газпрома\n"
+		"├ Руководитель отдела продаж XYZ\n\n"
+		"Просто введите данные о человеке в похожем формате и отправьте их боту.",
+		reply_markup=_INLINE_SEARCH_MENU,
+	)
+	_CHAT_MODE[message.chat.id] = "search"
 
 
 async def cmd_id(message: types.Message):
@@ -52,16 +112,73 @@ async def cmd_subscribe(message: types.Message):
 	else:
 		await message.answer(f"Подписка на 30 дней за 300₽:\n{url}")
 
-async def handle_text(message: types.Message):
+
+async def cb_menu_search(callback: types.CallbackQuery):
+	if not callback.message:
+		await callback.answer()
+		return
+	chat_id = callback.message.chat.id
+	_CHAT_MODE[chat_id] = "search"
+	text = (
+		"⬇️ Примеры запросов:\n\n"
+		"👤 Поиск по должности\n"
+		"├ Генеральный директор Газпрома\n"
+		"├ Руководитель отдела продаж XYZ\n\n"
+		"*Просто введите известные вам данные о человеке в похожем формате и отправьте их боту.*"
+	)
+	await callback.message.answer(text, reply_markup=_INLINE_SEARCH_MENU, parse_mode="Markdown")
+	await callback.answer()
+
+
+async def cb_menu_profile(callback: types.CallbackQuery):
+	if not callback.message:
+		await callback.answer()
+		return
+	chat_id = callback.message.chat.id
+	uid = await get_or_create_uid_for_telegram(chat_id)
+	active, active_until = get_subscription_status(uid)
+	if active_until > 0:
+		ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(active_until))
+	else:
+		ts = "нет"
+	if active:
+		text = f"Твой ID: `{uid}`\nПодписка активна до {ts}."
+	else:
+		text = f"Твой ID: `{uid}`\nПодписка неактивна. Дата окончания: {ts}."
+	await callback.message.answer(text, parse_mode="Markdown")
+	await callback.answer()
+
+
+async def cb_menu_back(callback: types.CallbackQuery):
+	if not callback.message:
+		await callback.answer()
+		return
+	chat_id = callback.message.chat.id
+	_CHAT_MODE[chat_id] = "main"
+	await callback.message.answer(
+		"Вы вернулись в главное меню.\n\nВыберите действие:",
+		reply_markup=_INLINE_MAIN_MENU,
+	)
+	await callback.answer()
+
+
+async def _run_search(message: types.Message):
 	t0 = time.monotonic()
 	ok_flag = False
 	ms_len = 0
 	out_len = 0
-	await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+	chat_id = message.chat.id
+	if chat_id in _BUSY_CHATS:
+		await message.answer(
+			"Мы всё ещё обрабатываем ваш предыдущий запрос. Подождите немного и попробуйте снова."
+		)
+		return
+	_BUSY_CHATS.add(chat_id)
+	await message.bot.send_chat_action(chat_id, ChatAction.TYPING)
 	status = await message.answer("Ищу")
 	async def on_llm_start():
 		try:
-			await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+			await message.bot.send_chat_action(chat_id, ChatAction.TYPING)
 		except Exception:
 			pass
 	final = ""
@@ -74,6 +191,7 @@ async def handle_text(message: types.Message):
 		for chunk in split_telegram_messages(final):
 			await message.answer(chunk)
 	finally:
+		_BUSY_CHATS.discard(chat_id)
 		try:
 			await status.delete()
 		except Exception:
@@ -82,7 +200,7 @@ async def handle_text(message: types.Message):
 		await record_request_stat({
 			"ts": int(time.time()),
 			"source": "tg",
-			"chat_id": message.chat.id,
+			"chat_id": chat_id,
 			"text_len": len(message.text or ""),
 			"dur": round(max(0.0, time.monotonic() - t0), 1),
 			"ok": ok_flag,
@@ -91,3 +209,26 @@ async def handle_text(message: types.Message):
 		})
 	except Exception:
 		pass
+
+
+async def handle_text(message: types.Message):
+	chat_id = message.chat.id
+	txt = (message.text or "").strip()
+	if txt == "Меню":
+		_CHAT_MODE[chat_id] = "main"
+		await _send_main_menu(message)
+		return
+	if chat_id in _BUSY_CHATS:
+		await message.answer(
+			"Мы всё ещё обрабатываем ваш предыдущий запрос. Подождите немного и попробуйте снова."
+		)
+		return
+	mode = _CHAT_MODE.get(chat_id) or "main"
+	if mode == "search":
+		await _run_search(message)
+	else:
+		if txt.startswith("/"):
+			return
+		await _send_main_menu(message)
+
+
