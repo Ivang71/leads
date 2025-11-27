@@ -37,7 +37,7 @@ def extract_name_with_groq(query: str, text: str) -> dict:
 		Правила:
 		- "exact" означает точное совпадение; "alternative" означает близкие должности; "none" означает отсутствие подходящих данных.
 		- "candidates" может содержать несколько объектов. В каждом укажи "full_name", "position" и два варианта email этого человека в поле "email"
-		- "email" Вычисляется слеюущим образом: допустим у нас Иван Иванов Иванович и company.ru, тогда "email" будет ["ivan.ivanov@company.ru", "i.ivanov@company.ru"]. Другой пример: Анастасия Маркова Игоревна и cdek.ru, правильный "email": ["anastasia.markova@cdek.ru", "a.markova@cdek.ru"].
+		- "email" Вычисляется слеюущим образом: допустим у нас Иван Иванов Иванович и mts.ru, тогда "email" будет ["ivan.ivanov@mts.ru", "i.ivanov@mts.ru"]. Другой пример: Анастасия Маркова Игоревна и cdek.ru, правильный "email": ["anastasia.markova@cdek.ru", "a.markova@cdek.ru"].
 		- Не добавляй пояснений, текста вне JSON и не нарушай структуру.
 		- Ты можешь вернуть только этот json и ничего больше.
 		Текст:\n\n
