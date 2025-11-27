@@ -47,9 +47,8 @@ async def _send_main_menu(message: types.Message):
 			pass
 	_CHAT_MODE[chat_id] = "main"
 	text = (
-		"Добро пожаловать в поисковую систему «Вектор».\n\n"
-		"Мы помогаем превращать открытые источники в удобные данные для поиска и экспериментов.\n\n"
-		"Выберите действие:"
+		"Добро пожаловать в поисковую систему «Поток».\n\n"
+		"Выберите нужное действие:"
 	)
 	sent = await message.answer(text, reply_markup=_INLINE_MAIN_MENU)
 	_MENU_MSG[chat_id] = sent.message_id
@@ -99,14 +98,14 @@ async def cmd_start(message: types.Message):
 	name = (message.from_user.full_name or "").strip() if message.from_user else ""
 	if not name and message.from_user:
 		name = (message.from_user.username or "").strip()
-	await message.answer(
-		"🔮 Постоянная ссылка на бота\n\n"
-		"Актуальную ссылку на бота вы всегда найдёте на нашем сайте: https://example.com\n\n"
-		"Сохраните её, чтобы не потерять доступ к боту даже в случае блокировок.",
-		reply_markup=_REPLY_MENU,
-	)
-	greet = f"Привет, {name}!" if name else "Привет!"
-	await message.answer(f"{greet}\n\nРады видеть вас в системе «Вектор».")
+	# await message.answer(
+	# 	"🔮 Постоянная ссылка на бота\n\n"
+	# 	"Актуальную ссылку на бота вы всегда найдёте на нашем сайте: https://example.com\n\n"
+	# 	"Сохраните её, чтобы не потерять доступ к боту даже в случае блокировок.",
+	# 	reply_markup=_REPLY_MENU,
+	# )
+	greet = f"Приветствую, {name}!" if name else "Приветствую!"
+	await message.answer(greet)
 	await _send_main_menu(message)
 
 
