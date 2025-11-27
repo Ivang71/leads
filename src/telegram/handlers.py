@@ -16,6 +16,7 @@ from .. import config
 
 _CHAT_MODE: dict[int, str] = {}
 _BUSY_CHATS: set[int] = set()
+_MENU_MSG: dict[int, int] = {}
 
 _REPLY_MENU = ReplyKeyboardMarkup(
 	keyboard=[[KeyboardButton(text="Меню")]],
@@ -38,13 +39,52 @@ _INLINE_SEARCH_MENU = InlineKeyboardMarkup(
 
 async def _send_main_menu(message: types.Message):
 	chat_id = message.chat.id
+	old_id = _MENU_MSG.get(chat_id)
+	if old_id:
+		try:
+			await message.bot.delete_message(chat_id, old_id)
+		except Exception:
+			pass
 	_CHAT_MODE[chat_id] = "main"
 	text = (
 		"Добро пожаловать в поисковую систему «Вектор».\n\n"
 		"Мы помогаем превращать открытые источники в удобные данные для поиска и экспериментов.\n\n"
 		"Выберите действие:"
 	)
-	await message.answer(text, reply_markup=_INLINE_MAIN_MENU)
+	sent = await message.answer(text, reply_markup=_INLINE_MAIN_MENU)
+	_MENU_MSG[chat_id] = sent.message_id
+
+
+async def _send_search_menu(message: types.Message, markdown_tip: bool = False):
+	chat_id = message.chat.id
+	old_id = _MENU_MSG.get(chat_id)
+	if old_id:
+		try:
+			await message.bot.delete_message(chat_id, old_id)
+		except Exception:
+			pass
+	_CHAT_MODE[chat_id] = "search"
+	if markdown_tip:
+		text = (
+			"⬇️ Примеры запросов:\n\n"
+			"👤 Поиск по должности\n"
+			"├ Генеральный директор Газпрома\n"
+			"├ Руководитель отдела продаж XYZ\n\n"
+			"*Просто введите известные вам данные о человеке в похожем формате и отправьте их боту.*"
+		)
+		sent = await message.answer(
+			text, reply_markup=_INLINE_SEARCH_MENU, parse_mode="Markdown"
+		)
+	else:
+		text = (
+			"⬇️ Примеры запросов:\n\n"
+			"👤 Поиск по должности\n"
+			"├ Генеральный директор Газпрома\n"
+			"├ Руководитель отдела продаж XYZ\n\n"
+			"Просто введите данные о человеке в похожем формате и отправьте их боту."
+		)
+		sent = await message.answer(text, reply_markup=_INLINE_SEARCH_MENU)
+	_MENU_MSG[chat_id] = sent.message_id
 
 
 async def cmd_start(message: types.Message):
@@ -71,15 +111,7 @@ async def cmd_start(message: types.Message):
 
 
 async def cmd_help(message: types.Message):
-	await message.answer(
-		"⬇️ Примеры запросов:\n\n"
-		"👤 Поиск по должности\n"
-		"├ Генеральный директор Газпрома\n"
-		"├ Руководитель отдела продаж XYZ\n\n"
-		"Просто введите данные о человеке в похожем формате и отправьте их боту.",
-		reply_markup=_INLINE_SEARCH_MENU,
-	)
-	_CHAT_MODE[message.chat.id] = "search"
+	await _send_search_menu(message, markdown_tip=False)
 
 
 async def cmd_id(message: types.Message):
@@ -117,16 +149,7 @@ async def cb_menu_search(callback: types.CallbackQuery):
 	if not callback.message:
 		await callback.answer()
 		return
-	chat_id = callback.message.chat.id
-	_CHAT_MODE[chat_id] = "search"
-	text = (
-		"⬇️ Примеры запросов:\n\n"
-		"👤 Поиск по должности\n"
-		"├ Генеральный директор Газпрома\n"
-		"├ Руководитель отдела продаж XYZ\n\n"
-		"*Просто введите известные вам данные о человеке в похожем формате и отправьте их боту.*"
-	)
-	await callback.message.answer(text, reply_markup=_INLINE_SEARCH_MENU, parse_mode="Markdown")
+	await _send_search_menu(callback.message, markdown_tip=True)
 	await callback.answer()
 
 
@@ -153,12 +176,7 @@ async def cb_menu_back(callback: types.CallbackQuery):
 	if not callback.message:
 		await callback.answer()
 		return
-	chat_id = callback.message.chat.id
-	_CHAT_MODE[chat_id] = "main"
-	await callback.message.answer(
-		"Вы вернулись в главное меню.\n\nВыберите действие:",
-		reply_markup=_INLINE_MAIN_MENU,
-	)
+	await _send_main_menu(callback.message)
 	await callback.answer()
 
 
