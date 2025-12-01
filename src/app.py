@@ -12,8 +12,24 @@ from aiogram.types import BotCommand
 logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
 
 
+@web.middleware
+async def cors_middleware(request, handler):
+	if request.method == "OPTIONS":
+		resp = web.Response()
+	else:
+		resp = await handler(request)
+	origin = request.headers.get("Origin")
+	if origin:
+		h = resp.headers
+		h["Access-Control-Allow-Origin"] = "*"
+		h["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+		h["Access-Control-Allow-Headers"] = "Content-Type,X-Admin-Password"
+		h["Access-Control-Max-Age"] = "600"
+	return resp
+
+
 def create_app() -> web.Application:
-	app = web.Application()
+	app = web.Application(middlewares=[cors_middleware])
 	bot, dp, secret = create_bot_and_dispatcher()
 	register_webhook_route(app, bot, dp, secret)
 	register_routes(app)
