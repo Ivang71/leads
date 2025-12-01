@@ -21,6 +21,12 @@ sudo systemctl restart leads-bot
 ```
 
 
+install psql
+```bash
+sudo apt-get install -y postgresql-client-common postgresql-client
+```
+
+
 init dev db
 ```bash
 ./scripts/dev_db_test.sh
@@ -28,8 +34,7 @@ init dev db
 
 init prod db
 ```bash
-DB_DSN="postgresql://postgres:YOUR_RDS_PASSWORD@database-1.cdogwc8qwvgm.us-east-1.rds.amazonaws.com:5432/postgres" \
-  /path/to/venv/bin/python -m src.migrate
+DB_DSN="postgresql://postgres:PASSWORD@database-1.cdogwc8qwvgm.us-east-1.rds.amazonaws.com:5432/postgres" python3 -m src.migrate
 ```
 
 
