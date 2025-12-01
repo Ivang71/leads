@@ -300,7 +300,7 @@ async def admin_page(_: web.Request) -> web.Response:
 </body>
 </html>
 """
-	return web.Response(text=html, content_type="text/html; charset=utf-8")
+	return web.Response(text=html, content_type="text/html", charset="utf-8")
 
 
 def _check_admin_auth(request: web.Request) -> bool:
