@@ -130,6 +130,7 @@ async def admin_page(_: web.Request) -> web.Response:
   <script>
     (function(){
       var PASS_KEY = "leads_admin_ok";
+      var PASS_VAL_KEY = "leads_admin_pass";
       var passInput = document.getElementById("admin-pass");
       var loginBtn = document.getElementById("login-btn");
       var loginBlock = document.getElementById("login-block");
@@ -141,21 +142,23 @@ async def admin_page(_: web.Request) -> web.Response:
       var messagesView = document.getElementById("messages-view");
       var statusPill = document.getElementById("status-pill");
       var summary = document.getElementById("summary");
+      var adminPass = "";
 
       function setStatus(text) { statusPill.textContent = text || ""; }
       function setSummary(text) { summary.textContent = text || ""; }
 
-      function ensureLoginFlag() {
+      function loadStoredPass() {
         try {
-          return localStorage.getItem(PASS_KEY) === "1";
-        } catch (e) {
-          return false;
-        }
+          if (localStorage.getItem(PASS_KEY) === "1") {
+            adminPass = localStorage.getItem(PASS_VAL_KEY) || "";
+          }
+        } catch (e) {}
       }
 
-      function setLoginFlag() {
+      function storePass(v) {
         try {
           localStorage.setItem(PASS_KEY, "1");
+          localStorage.setItem(PASS_VAL_KEY, v);
         } catch (e) {}
       }
 
@@ -189,14 +192,16 @@ async def admin_page(_: web.Request) -> web.Response:
           return r.json();
         }).then(function(){
           loginError.textContent = "";
-          setLoginFlag();
+          adminPass = v;
+          storePass(v);
           showApp();
         }).catch(function(){
           loginError.textContent = "Wrong password.";
         });
       });
 
-      if (ensureLoginFlag()) {
+      loadStoredPass();
+      if (adminPass) {
         showApp();
       }
 
@@ -208,6 +213,10 @@ async def admin_page(_: web.Request) -> web.Response:
       var usersTableWrap = document.getElementById("users-table-wrap");
       var loadUsersBtn = document.getElementById("load-users");
       loadUsersBtn.addEventListener("click", function(){
+        if (!adminPass) {
+          setStatus("Not logged in");
+          return;
+        }
         var params = [];
         var uid = (filterUserId.value || "").trim();
         var tid = (filterTelegramId.value || "").trim();
@@ -216,7 +225,7 @@ async def admin_page(_: web.Request) -> web.Response:
         var url = "/admin/api/users";
         if (params.length) url += "?" + params.join("&");
         setStatus("Loading users...");
-        fetch(url).then(function(r){ return r.json(); }).then(function(data){
+        fetch(url, { headers: {"X-Admin-Password": adminPass} }).then(function(r){ return r.json(); }).then(function(data){
           setStatus("");
           renderUsers(data || {});
         }).catch(function(e){
@@ -252,13 +261,17 @@ async def admin_page(_: web.Request) -> web.Response:
       var messagesWrap = document.getElementById("messages-wrap");
 
       loadMessagesBtn.addEventListener("click", function(){
+        if (!adminPass) {
+          setStatus("Not logged in");
+          return;
+        }
         var uid = (msgUserId.value || "").trim();
         if (!uid) {
           messagesWrap.innerHTML = "<div class='muted'>Enter user id.</div>";
           return;
         }
         setStatus("Loading messages...");
-        fetch("/admin/api/messages?user_id=" + encodeURIComponent(uid)).then(function(r){ return r.json(); }).then(function(data){
+        fetch("/admin/api/messages?user_id=" + encodeURIComponent(uid), { headers: {"X-Admin-Password": adminPass} }).then(function(r){ return r.json(); }).then(function(data){
           setStatus("");
           renderMessages(data || {});
         }).catch(function(){
@@ -294,16 +307,7 @@ def _check_admin_auth(request: web.Request) -> bool:
 	if not config.ADMIN_PASSWORD:
 		return False
 	h = request.headers.get("X-Admin-Password") or ""
-	if h and h == config.ADMIN_PASSWORD:
-		return True
-	try:
-		if request.content_type == "application/json":
-			data = json.loads(request._read_bytes or b"{}")
-			p = (data.get("password") or "").strip()
-			return bool(p and p == config.ADMIN_PASSWORD)
-	except Exception:
-		return False
-	return False
+	return bool(h and h == config.ADMIN_PASSWORD)
 
 
 async def admin_login(request: web.Request) -> web.Response:
@@ -338,7 +342,7 @@ async def admin_users(request: web.Request) -> web.Response:
 		where.append("telegram_id = $%d" % (len(args) + 1))
 		args.append(int(tg_id))
 	where_sql = " where " + " and ".join(where) if where else ""
- sql_items = f"select id, uid, telegram_id, telegram_username, display_name, locale, to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at from users{where_sql} order by id desc limit {limit}"
+	sql_items = f"select id, uid, telegram_id, telegram_username, display_name, locale, to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at from users{where_sql} order by id desc limit {limit}"
 	sql_count = f"select count(*) from users{where_sql}"
 	pool = get_pool()
 	async with pool.acquire() as conn:
