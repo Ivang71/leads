@@ -12,6 +12,7 @@ from ..storage.greeted import GREETED_CHAT_IDS, save_greeted
 from ..stats import record_request_stat
 from ..utils.text import split_telegram_messages
 from ..storage.users import get_or_create_uid_for_telegram, get_subscription_status
+from ..storage.history import log_telegram_interaction
 from .. import config
 
 _CHAT_MODE: dict[int, str] = {}
@@ -95,6 +96,11 @@ async def cmd_start(message: types.Message):
 		except Exception:
 			pass
 	_CHAT_MODE[chat_id] = "main"
+	try:
+		if message.from_user:
+			await get_or_create_uid_for_telegram(chat_id, message.from_user)
+	except Exception:
+		logging.exception("failed to ensure user on /start")
 	name = (message.from_user.full_name or "").strip() if message.from_user else ""
 	if not name and message.from_user:
 		name = (message.from_user.username or "").strip()
@@ -114,7 +120,7 @@ async def cmd_help(message: types.Message):
 
 
 async def cmd_id(message: types.Message):
-	uid = await get_or_create_uid_for_telegram(message.chat.id)
+	uid = await get_or_create_uid_for_telegram(message.chat.id, message.from_user)
 	await message.answer(f"Ваш ID: `{uid}`", parse_mode="Markdown")
 
 
@@ -122,7 +128,7 @@ async def cmd_subscribe(message: types.Message):
 	if not (config.FREEKASSA_MERCHANT_ID and config.FREEKASSA_SECRET1):
 		await message.answer("Платежи пока не настроены.")
 		return
-	uid = await get_or_create_uid_for_telegram(message.chat.id)
+	uid = await get_or_create_uid_for_telegram(message.chat.id, message.from_user)
 	amount = "49"
 	currency = "RUB"
 	order_id = f"{uid}-{int(time.time())}"
@@ -137,7 +143,7 @@ async def cmd_subscribe(message: types.Message):
 		f"&s={sign}"
 		f"&us_uid={uid}"
 	)
-	active, active_until = get_subscription_status(uid)
+	active, active_until = await get_subscription_status(uid)
 	if active:
 		await message.answer(f"У тебя уже есть активная подписка.\nСсылка на продление на 30 дней за 300₽:\n{url}")
 	else:
@@ -157,8 +163,8 @@ async def cb_menu_profile(callback: types.CallbackQuery):
 		await callback.answer()
 		return
 	chat_id = callback.message.chat.id
-	uid = await get_or_create_uid_for_telegram(chat_id)
-	active, active_until = get_subscription_status(uid)
+	uid = await get_or_create_uid_for_telegram(chat_id, callback.from_user)
+	active, active_until = await get_subscription_status(uid)
 	if active_until > 0:
 		ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(active_until))
 	else:
@@ -213,6 +219,11 @@ async def _run_search(message: types.Message):
 			await status.delete()
 		except Exception:
 			pass
+	try:
+		if final:
+			await log_telegram_interaction(message, final)
+	except Exception:
+		logging.exception("failed to log tg interaction")
 	try:
 		await record_request_stat({
 			"ts": int(time.time()),

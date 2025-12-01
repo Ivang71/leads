@@ -1,5 +1,4 @@
 python-dotenv
-
 tls-client
 beautifulsoup4
 lxml
@@ -8,3 +7,4 @@ groq
 tiktoken
 aiohttp
 aiogram
+asyncpg

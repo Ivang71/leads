@@ -26,3 +26,7 @@ GREETED_PATH = os.path.join(PROJECT_ROOT, "greeted.json")
 USERS_PATH = os.path.join(PROJECT_ROOT, "users.json")
 SERPER_RESULTS_PATH = os.path.join(PROJECT_ROOT, "serper_results.jsonl")
 
+DB_DSN = (os.getenv("DB_DSN") or "postgresql://postgres:postgres@127.0.0.1:5432/postgres").strip()
+DB_SCHEMA_PATH = os.path.join(PROJECT_ROOT, "db_schema.sql")
+DB_AUTO_MIGRATE = (os.getenv("DB_AUTO_MIGRATE") or "").strip() == "1"
+

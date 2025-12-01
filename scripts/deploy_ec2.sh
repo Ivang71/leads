@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DOMAIN="${DOMAIN:-eus.lat}"
 PORT="${PORT:-8000}"
 PHANTOM_PATH_DEFAULT="$HOME/phantom"
@@ -35,6 +35,8 @@ fi
 "$VENV_DIR/bin/pip" install --upgrade pip
 "$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"
 "$VENV_DIR/bin/pip" install tls-client || true
+
+"$VENV_DIR/bin/python" -m src.migrate
 
 # Optionally clone phantom if PHANTOM_GIT is provided and PHANTOM_PATH missing
 if [ -n "${PHANTOM_GIT:-}" ] && [ ! -d "$PHANTOM_PATH" ]; then
