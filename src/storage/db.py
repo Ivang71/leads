@@ -13,7 +13,8 @@ async def on_startup(_: object) -> None:
 			return
 		_POOL = await asyncpg.create_pool(dsn=config.DB_DSN, min_size=1, max_size=5)
 		if config.DB_AUTO_MIGRATE:
-			await apply_migrations()
+			async with _POOL.acquire() as conn:
+				await apply_migrations(conn)
 
 
 async def on_cleanup(_: object) -> None:

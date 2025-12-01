@@ -1,15 +1,15 @@
-import asyncio
-from .storage.db import on_startup, on_cleanup
+import asyncio, asyncpg
+from . import config
 from .storage.migrations import apply_migrations
 
 
 async def _main() -> None:
-	app = object()
-	await on_startup(app)
+	pool = await asyncpg.create_pool(dsn=config.DB_DSN, min_size=1, max_size=1)
 	try:
-		await apply_migrations()
+		async with pool.acquire() as conn:
+			await apply_migrations(conn)
 	finally:
-		await on_cleanup(app)
+		await pool.close()
 
 
 if __name__ == "__main__":
