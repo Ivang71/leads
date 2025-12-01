@@ -122,13 +122,19 @@ sudo systemctl restart nginx
 LE_CERT="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
 LE_KEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
 CERT_KIND="self"
-if [ -n "${EMAIL:-}" ]; then
-  if sudo certbot --nginx --agree-tos -m "$EMAIL" -d "$DOMAIN" --non-interactive --redirect; then
-    CERT_KIND="le"
-  fi
+
+# If certs already exist, treat them as Let's Encrypt and skip certbot
+if [ -f "$LE_CERT" ] && [ -f "$LE_KEY" ]; then
+  CERT_KIND="le"
 else
-  if sudo certbot --nginx --agree-tos --register-unsafely-without-email -d "$DOMAIN" --non-interactive --redirect; then
-    CERT_KIND="le"
+  if [ -n "${EMAIL:-}" ]; then
+    if sudo certbot --nginx --agree-tos -m "$EMAIL" -d "$DOMAIN" --non-interactive --redirect; then
+      CERT_KIND="le"
+    fi
+  else
+    if sudo certbot --nginx --agree-tos --register-unsafely-without-email -d "$DOMAIN" --non-interactive --redirect; then
+      CERT_KIND="le"
+    fi
   fi
 fi
 
